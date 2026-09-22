@@ -192,8 +192,8 @@ async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
     })
   } catch {
     const hint = apiOrigin()
-      ? 'Could not reach the Storage Peeker API on port 3847. Restart npm run dev.'
-      : 'Could not reach the Storage Peeker API. Restart npm run dev and open the URL from the terminal.'
+      ? 'Could not reach the Laravel Log Peeker API on port 3847. Restart npm run dev.'
+      : 'Could not reach the Laravel Log Peeker API. Restart npm run dev and open the URL from the terminal.'
     throw new Error(hint)
   }
   if (res.status !== 401) return res

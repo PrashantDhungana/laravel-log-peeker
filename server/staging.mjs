@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { pipeline } from 'node:stream/promises'
 
-export const STAGING_ROOT = join(tmpdir(), 'storage-peeker-staging')
+export const STAGING_ROOT = join(tmpdir(), 'laravel-log-peeker-staging')
 
 /** @param {string} name */
 export function safeFilename(name) {

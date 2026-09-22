@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 
-const STORAGE_KEY = 'storage-peeker.split-ratio'
+const STORAGE_KEY = 'laravel-log-peeker.split-ratio'
 const DEFAULT_RATIO = 50
 const MIN_PANEL_PX = 240
 const LG_MEDIA = '(min-width: 1024px)'

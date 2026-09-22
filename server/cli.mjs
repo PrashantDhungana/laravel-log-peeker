@@ -44,7 +44,7 @@ async function main() {
     ? `${baseUrl}&path=${encodeURIComponent(initialPath)}`
     : baseUrl
 
-  console.log(`Storage Peeker listening on ${baseUrl}`)
+  console.log(`Laravel Log Peeker listening on ${baseUrl}`)
   console.log(`Token: ${token}`)
 
   if (!noOpen) openBrowser(url)

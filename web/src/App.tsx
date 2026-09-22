@@ -438,7 +438,7 @@ export default function App() {
         <>
           <header className="flex shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900 px-3 py-2">
             <div className="shrink-0">
-              <h1 className="text-sm font-semibold leading-tight">Storage Peeker</h1>
+              <h1 className="text-sm font-semibold leading-tight">Laravel Log Peeker</h1>
             </div>
             <OpenFile
               pathsInput={pathsInput}
