@@ -5,7 +5,7 @@ import { join, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
 import { openFileInfo, byteRangeForTimeFilter } from './logfile.mjs'
-import { resolveEntry, readEntryAt } from './entries.mjs'
+import { resolveEntry, readEntryAt, readNeighbors } from './entries.mjs'
 import { buildRgArgs, entryMatchesFilters } from './query.mjs'
 import { runRgOnRange, runRgCount } from './rg.mjs'
 import { readJsonBody, sendError, sendJson, sendStreamError } from './util.mjs'
@@ -94,6 +94,30 @@ async function handleApi(req, res, url) {
 
   if (req.method === 'POST' && url.pathname === '/api/count') {
     await handleCount(req, res)
+    return
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/neighbors') {
+    const body = await readJsonBody(req)
+    const { path, beforeOffset, afterOffset, count = 3 } = body
+    if (!path) {
+      sendError(res, 400, 'path required')
+      return
+    }
+    if (beforeOffset === undefined && afterOffset === undefined) {
+      sendError(res, 400, 'beforeOffset or afterOffset required')
+      return
+    }
+    try {
+      const neighbors = await readNeighbors(path, {
+        beforeOffset,
+        afterOffset,
+        count: Math.min(Math.max(1, count), 20),
+      })
+      sendJson(res, neighbors)
+    } catch (err) {
+      sendError(res, 400, err instanceof Error ? err.message : String(err))
+    }
     return
   }
 

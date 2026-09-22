@@ -2,13 +2,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   countMatches,
   fetchEntry,
+  fetchNeighbors,
   openFile,
   streamSearch,
   type FileInfo,
+  type NeighborEntry,
   type SearchEntry,
   type SearchFilters,
 } from './api'
-import { EntryDetail } from './components/EntryDetail'
+import { EntryDetail, NEIGHBOR_PAGE } from './components/EntryDetail'
 import { FilterBar, type FilterState } from './components/FilterBar'
 import { OpenFile } from './components/OpenFile'
 import { ResultList } from './components/ResultList'
@@ -53,9 +55,24 @@ export default function App() {
   const [entryBody, setEntryBody] = useState<string | null>(null)
   const [entryLoading, setEntryLoading] = useState(false)
   const [entryError, setEntryError] = useState<string | null>(null)
+  const [contextAbove, setContextAbove] = useState<NeighborEntry[]>([])
+  const [contextBelow, setContextBelow] = useState<NeighborEntry[]>([])
+  const [hasMoreAbove, setHasMoreAbove] = useState(false)
+  const [hasMoreBelow, setHasMoreBelow] = useState(false)
+  const [loadingAbove, setLoadingAbove] = useState(false)
+  const [loadingBelow, setLoadingBelow] = useState(false)
 
   const searchAbort = useRef<AbortController | null>(null)
   const countAbort = useRef<AbortController | null>(null)
+
+  const resetContext = useCallback(() => {
+    setContextAbove([])
+    setContextBelow([])
+    setHasMoreAbove(false)
+    setHasMoreBelow(false)
+    setLoadingAbove(false)
+    setLoadingBelow(false)
+  }, [])
 
   const handleOpen = useCallback(async () => {
     const trimmed = path.trim()
@@ -65,6 +82,7 @@ export default function App() {
     setResults([])
     setSelected(null)
     setEntryBody(null)
+    resetContext()
     setNextCursor(null)
     setHasMore(false)
     setTotalCount(null)
@@ -78,7 +96,7 @@ export default function App() {
     } finally {
       setOpenLoading(false)
     }
-  }, [path])
+  }, [path, resetContext])
 
   const openedInitial = useRef(false)
   useEffect(() => {
@@ -120,6 +138,7 @@ export default function App() {
         setResults([])
         setSelected(null)
         setEntryBody(null)
+        resetContext()
         setNextCursor(null)
         setHasMore(false)
         setTotalCount(null)
@@ -149,7 +168,7 @@ export default function App() {
         setLoadingMore(false)
       }
     },
-    [fileInfo, buildSearchFilters],
+    [fileInfo, buildSearchFilters, resetContext],
   )
 
   const handleSearch = () => void runSearch(false, 0)
@@ -163,6 +182,9 @@ export default function App() {
       setSelected(entry)
       setEntryBody(null)
       setEntryError(null)
+      resetContext()
+      setHasMoreAbove(entry.offset > 0)
+      setHasMoreBelow(entry.offset + entry.length < fileInfo.size)
       setEntryLoading(true)
       try {
         const data = await fetchEntry(fileInfo.path, entry.offset, entry.length)
@@ -173,8 +195,53 @@ export default function App() {
         setEntryLoading(false)
       }
     },
-    [fileInfo],
+    [fileInfo, resetContext],
   )
+
+  const handleLoadAbove = useCallback(async () => {
+    if (!fileInfo || !selected || loadingAbove) return
+    setLoadingAbove(true)
+    setEntryError(null)
+    try {
+      const beforeOffset = contextAbove.length > 0 ? contextAbove[0].offset : selected.offset
+      const data = await fetchNeighbors(fileInfo.path, {
+        beforeOffset,
+        count: NEIGHBOR_PAGE,
+      })
+      const batch = data.above
+      if (!batch) return
+      setContextAbove((prev) => [...batch.entries, ...prev])
+      setHasMoreAbove(batch.hasMore)
+    } catch (err) {
+      setEntryError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoadingAbove(false)
+    }
+  }, [fileInfo, selected, loadingAbove, contextAbove])
+
+  const handleLoadBelow = useCallback(async () => {
+    if (!fileInfo || !selected || loadingBelow) return
+    setLoadingBelow(true)
+    setEntryError(null)
+    try {
+      const afterOffset =
+        contextBelow.length > 0
+          ? contextBelow[contextBelow.length - 1].offset + contextBelow[contextBelow.length - 1].length
+          : selected.offset + selected.length
+      const data = await fetchNeighbors(fileInfo.path, {
+        afterOffset,
+        count: NEIGHBOR_PAGE,
+      })
+      const batch = data.below
+      if (!batch) return
+      setContextBelow((prev) => [...prev, ...batch.entries])
+      setHasMoreBelow(batch.hasMore)
+    } catch (err) {
+      setEntryError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setLoadingBelow(false)
+    }
+  }, [fileInfo, selected, loadingBelow, contextBelow])
 
   return (
     <div className="flex h-screen flex-col">
@@ -213,7 +280,20 @@ export default function App() {
             onLoadMore={handleLoadMore}
             totalCount={totalCount}
           />
-          <EntryDetail entry={selected} body={entryBody} loading={entryLoading} error={entryError} />
+          <EntryDetail
+            entry={selected}
+            body={entryBody}
+            loading={entryLoading}
+            error={entryError}
+            above={contextAbove}
+            below={contextBelow}
+            hasMoreAbove={hasMoreAbove}
+            hasMoreBelow={hasMoreBelow}
+            loadingAbove={loadingAbove}
+            loadingBelow={loadingBelow}
+            onLoadAbove={() => void handleLoadAbove()}
+            onLoadBelow={() => void handleLoadBelow()}
+          />
         </div>
       </main>
     </div>

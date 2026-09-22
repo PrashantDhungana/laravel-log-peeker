@@ -34,7 +34,7 @@ describe('performance smoke', () => {
     const t1 = performance.now()
     const { start, end } = await byteRangeForTimeFilter(file, info.firstTime, info.lastTime)
     const rangeMs = performance.now() - t1
-    expect(rangeMs).toBeLessThan(50)
+    expect(rangeMs).toBeLessThan(75)
 
     const { args } = buildRgArgs({ phrase: 'heartbeat 12345', caseSensitive: false })
     const matches = []

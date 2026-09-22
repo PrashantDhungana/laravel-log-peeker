@@ -61,6 +61,27 @@ export interface EntryBody {
   truncated: boolean
 }
 
+export interface NeighborEntry {
+  offset: number
+  length: number
+  time: number | null
+  level: string
+  channel: string
+  message: string
+  body: string
+  truncated: boolean
+}
+
+export interface NeighborBatch {
+  entries: NeighborEntry[]
+  hasMore: boolean
+}
+
+export interface NeighborsResponse {
+  above?: NeighborBatch
+  below?: NeighborBatch
+}
+
 const TOKEN_STORAGE_KEY = 'peeker-token'
 
 function rememberToken(token: string): string {
@@ -111,6 +132,19 @@ export async function openFile(path: string): Promise<FileInfo> {
   })
   if (!res.ok) throw new Error(await parseError(res))
   return res.json() as Promise<FileInfo>
+}
+
+export async function fetchNeighbors(
+  path: string,
+  opts: { beforeOffset?: number; afterOffset?: number; count?: number },
+): Promise<NeighborsResponse> {
+  const res = await fetch(withToken('/api/neighbors'), {
+    method: 'POST',
+    headers: apiHeaders(),
+    body: JSON.stringify({ path, ...opts }),
+  })
+  if (!res.ok) throw new Error(await parseError(res))
+  return res.json() as Promise<NeighborsResponse>
 }
 
 export async function fetchEntry(path: string, offset: number, length: number): Promise<EntryBody> {
