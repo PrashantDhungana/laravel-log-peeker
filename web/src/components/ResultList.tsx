@@ -6,7 +6,8 @@ import { levelColour } from '../lib/levels'
 
 interface ResultListProps {
   results: SearchEntry[]
-  selectedOffset: number | null
+  selectedKey: string | null
+  multiFile: boolean
   onSelect: (entry: SearchEntry) => void
   hasMore: boolean
   loadingMore: boolean
@@ -14,9 +15,14 @@ interface ResultListProps {
   totalCount: number | null
 }
 
+function entryKey(entry: SearchEntry): string {
+  return `${entry.path ?? ''}:${entry.offset}`
+}
+
 export function ResultList({
   results,
-  selectedOffset,
+  selectedKey,
+  multiFile,
   onSelect,
   hasMore,
   loadingMore,
@@ -63,10 +69,10 @@ export function ResultList({
         <div style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}>
           {virtualizer.getVirtualItems().map((item) => {
             const entry = results[item.index]
-            const selected = selectedOffset === entry.offset
+            const selected = selectedKey === entryKey(entry)
             return (
               <button
-                key={`${entry.offset}-${item.index}`}
+                key={`${entryKey(entry)}-${item.index}`}
                 type="button"
                 onClick={() => onSelect(entry)}
                 className={`absolute left-0 top-0 flex w-full flex-col gap-1 border-b border-zinc-800/80 px-4 py-3 text-left hover:bg-zinc-800/50 ${
@@ -78,6 +84,11 @@ export function ResultList({
                   <span className={`rounded px-2 py-0.5 font-medium ${levelColour(entry.level)}`}>
                     {entry.level}
                   </span>
+                  {multiFile && entry.fileName && (
+                    <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-zinc-400" title={entry.path}>
+                      {entry.fileName}
+                    </span>
+                  )}
                   <span className="text-zinc-500">{entry.channel}</span>
                   <span className="text-zinc-500">{formatDateTime(entry.time)}</span>
                   {entry.truncated && <span className="text-amber-500">truncated</span>}

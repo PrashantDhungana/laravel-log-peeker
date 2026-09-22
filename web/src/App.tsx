@@ -4,11 +4,13 @@ import {
   fetchEntry,
   fetchFacets,
   fetchNeighbors,
-  openFile,
+  openFiles,
   streamSearch,
   type FileFacets,
   type FileInfo,
   type NeighborEntry,
+  type OpenSummary,
+  type SearchCursor,
   type SearchEntry,
   type SearchFilters,
 } from './api'
@@ -31,8 +33,16 @@ function defaultFilters(firstTime: number | null, lastTime: number | null): Filt
   }
 }
 
+function parsePathsInput(text: string): string[] {
+  return [...new Set(text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean))]
+}
+
+function entryKey(entry: SearchEntry): string {
+  return `${entry.path ?? ''}:${entry.offset}`
+}
+
 export default function App() {
-  const [path, setPath] = useState(() => {
+  const [pathsInput, setPathsInput] = useState(() => {
     const raw = new URLSearchParams(window.location.search).get('path') ?? ''
     try {
       return decodeURIComponent(raw)
@@ -40,7 +50,8 @@ export default function App() {
       return raw
     }
   })
-  const [fileInfo, setFileInfo] = useState<FileInfo | null>(null)
+  const [files, setFiles] = useState<FileInfo[]>([])
+  const [summary, setSummary] = useState<OpenSummary | null>(null)
   const [openLoading, setOpenLoading] = useState(false)
   const [openError, setOpenError] = useState<string | null>(null)
 
@@ -48,7 +59,7 @@ export default function App() {
   const [facets, setFacets] = useState<FileFacets | null>(null)
   const [facetsLoading, setFacetsLoading] = useState(false)
   const [results, setResults] = useState<SearchEntry[]>([])
-  const [nextCursor, setNextCursor] = useState<number | null>(null)
+  const [nextCursor, setNextCursor] = useState<number | SearchCursor | null>(null)
   const [hasMore, setHasMore] = useState(false)
   const [searching, setSearching] = useState(false)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -70,6 +81,11 @@ export default function App() {
   const countAbort = useRef<AbortController | null>(null)
   const facetsAbort = useRef<AbortController | null>(null)
 
+  const fileByPath = useCallback(
+    (path: string) => files.find((f) => f.path === path),
+    [files],
+  )
+
   const applyFacets = useCallback((next: FileFacets) => {
     setFacets(next)
     const levelNames = new Set(next.levels.map((l) => l.name))
@@ -81,22 +97,25 @@ export default function App() {
     }))
   }, [])
 
-  const loadFacets = useCallback(async (filePath: string) => {
-    facetsAbort.current?.abort()
-    const controller = new AbortController()
-    facetsAbort.current = controller
-    setFacets(null)
-    setFacetsLoading(true)
-    try {
-      const data = await fetchFacets(filePath, controller.signal)
-      applyFacets(data)
-    } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') return
+  const loadFacets = useCallback(
+    async (paths: string[]) => {
+      facetsAbort.current?.abort()
+      const controller = new AbortController()
+      facetsAbort.current = controller
       setFacets(null)
-    } finally {
-      setFacetsLoading(false)
-    }
-  }, [applyFacets])
+      setFacetsLoading(true)
+      try {
+        const data = await fetchFacets(paths, controller.signal)
+        applyFacets(data)
+      } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') return
+        setFacets(null)
+      } finally {
+        setFacetsLoading(false)
+      }
+    },
+    [applyFacets],
+  )
 
   const resetContext = useCallback(() => {
     setContextAbove([])
@@ -108,8 +127,8 @@ export default function App() {
   }, [])
 
   const handleOpen = useCallback(async () => {
-    const trimmed = path.trim()
-    if (!trimmed) return
+    const paths = parsePathsInput(pathsInput)
+    if (!paths.length) return
     setOpenLoading(true)
     setOpenError(null)
     setResults([])
@@ -122,46 +141,53 @@ export default function App() {
     setFacets(null)
     facetsAbort.current?.abort()
     try {
-      const info = await openFile(trimmed)
-      setFileInfo(info)
-      setFilters(defaultFilters(info.firstTime, info.lastTime))
-      void loadFacets(info.path)
+      const info = await openFiles(paths)
+      setFiles(info.files)
+      setSummary(info.summary)
+      setFilters(defaultFilters(info.summary.firstTime, info.summary.lastTime))
+      void loadFacets(paths)
     } catch (err) {
-      setFileInfo(null)
+      setFiles([])
+      setSummary(null)
       setOpenError(err instanceof Error ? err.message : String(err))
     } finally {
       setOpenLoading(false)
     }
-  }, [path, resetContext, loadFacets])
+  }, [pathsInput, resetContext, loadFacets])
 
   const openedInitial = useRef(false)
   useEffect(() => {
-    if (!openedInitial.current && path.trim()) {
+    if (!openedInitial.current && pathsInput.trim()) {
       openedInitial.current = true
       void handleOpen()
     }
-  }, [path, handleOpen])
+  }, [pathsInput, handleOpen])
 
   const buildSearchFilters = useCallback(
-    (cursor = 0): SearchFilters => ({
-      path: fileInfo!.path,
-      timeStart: filters.timeStart,
-      timeEnd: filters.timeEnd,
-      phrase: filters.phrase,
-      excludePhrase: filters.excludePhrase,
-      regex: filters.regex,
-      regexFlags: filters.regexFlags,
-      caseSensitive: filters.caseSensitive,
-      levels: filters.levels,
-      channel: filters.channel,
-      cursor,
-    }),
-    [fileInfo, filters],
+    (cursor: number | SearchCursor | null = null): SearchFilters => {
+      const paths = files.map((f) => f.path)
+      const base = {
+        timeStart: filters.timeStart,
+        timeEnd: filters.timeEnd,
+        phrase: filters.phrase,
+        excludePhrase: filters.excludePhrase,
+        regex: filters.regex,
+        regexFlags: filters.regexFlags,
+        caseSensitive: filters.caseSensitive,
+        levels: filters.levels,
+        channel: filters.channel,
+      }
+      if (paths.length === 1) {
+        return { path: paths[0], ...base, cursor: typeof cursor === 'number' ? cursor : 0 }
+      }
+      return { paths, ...base, cursor }
+    },
+    [files, filters],
   )
 
   const runSearch = useCallback(
-    async (append = false, cursor = 0) => {
-      if (!fileInfo) return
+    async (append = false, cursor: number | SearchCursor | null = null) => {
+      if (!files.length) return
 
       searchAbort.current?.abort()
       countAbort.current?.abort()
@@ -204,26 +230,28 @@ export default function App() {
         setLoadingMore(false)
       }
     },
-    [fileInfo, buildSearchFilters, resetContext],
+    [files, buildSearchFilters, resetContext],
   )
 
-  const handleSearch = () => void runSearch(false, 0)
+  const handleSearch = () => void runSearch(false, null)
   const handleLoadMore = () => {
     if (nextCursor !== null) void runSearch(true, nextCursor)
   }
 
   const handleSelect = useCallback(
     async (entry: SearchEntry) => {
-      if (!fileInfo) return
+      const entryPath = entry.path ?? files[0]?.path
+      const file = entryPath ? fileByPath(entryPath) : files[0]
+      if (!file || !entryPath) return
       setSelected(entry)
       setEntryBody(null)
       setEntryError(null)
       resetContext()
       setHasMoreAbove(entry.offset > 0)
-      setHasMoreBelow(entry.offset + entry.length < fileInfo.size)
+      setHasMoreBelow(entry.offset + entry.length < file.size)
       setEntryLoading(true)
       try {
-        const data = await fetchEntry(fileInfo.path, entry.offset, entry.length)
+        const data = await fetchEntry(entryPath, entry.offset, entry.length)
         setEntryBody(data.body)
       } catch (err) {
         setEntryError(err instanceof Error ? err.message : String(err))
@@ -231,16 +259,18 @@ export default function App() {
         setEntryLoading(false)
       }
     },
-    [fileInfo, resetContext],
+    [files, fileByPath, resetContext],
   )
 
   const handleLoadAbove = useCallback(async () => {
-    if (!fileInfo || !selected || loadingAbove) return
+    if (!selected || loadingAbove) return
+    const entryPath = selected.path ?? files[0]?.path
+    if (!entryPath) return
     setLoadingAbove(true)
     setEntryError(null)
     try {
       const beforeOffset = contextAbove.length > 0 ? contextAbove[0].offset : selected.offset
-      const data = await fetchNeighbors(fileInfo.path, {
+      const data = await fetchNeighbors(entryPath, {
         beforeOffset,
         count: NEIGHBOR_PAGE,
       })
@@ -253,10 +283,12 @@ export default function App() {
     } finally {
       setLoadingAbove(false)
     }
-  }, [fileInfo, selected, loadingAbove, contextAbove])
+  }, [files, selected, loadingAbove, contextAbove])
 
   const handleLoadBelow = useCallback(async () => {
-    if (!fileInfo || !selected || loadingBelow) return
+    if (!selected || loadingBelow) return
+    const entryPath = selected.path ?? files[0]?.path
+    if (!entryPath) return
     setLoadingBelow(true)
     setEntryError(null)
     try {
@@ -264,7 +296,7 @@ export default function App() {
         contextBelow.length > 0
           ? contextBelow[contextBelow.length - 1].offset + contextBelow[contextBelow.length - 1].length
           : selected.offset + selected.length
-      const data = await fetchNeighbors(fileInfo.path, {
+      const data = await fetchNeighbors(entryPath, {
         afterOffset,
         count: NEIGHBOR_PAGE,
       })
@@ -277,7 +309,7 @@ export default function App() {
     } finally {
       setLoadingBelow(false)
     }
-  }, [fileInfo, selected, loadingBelow, contextBelow])
+  }, [files, selected, loadingBelow, contextBelow])
 
   return (
     <div className="flex h-screen flex-col">
@@ -286,12 +318,13 @@ export default function App() {
           <h1 className="text-sm font-semibold leading-tight">Storage Peeker</h1>
         </div>
         <OpenFile
-          path={path}
-          onPathChange={setPath}
+          pathsInput={pathsInput}
+          onPathsInputChange={setPathsInput}
           onOpen={() => void handleOpen()}
           loading={openLoading}
           error={openError}
-          fileInfo={fileInfo}
+          files={files}
+          summary={summary}
         />
       </header>
 
@@ -302,7 +335,7 @@ export default function App() {
         onChange={setFilters}
         onSearch={handleSearch}
         searching={searching}
-        disabled={!fileInfo}
+        disabled={!files.length}
       />
 
       {searchError && (
@@ -314,7 +347,8 @@ export default function App() {
       <div className="grid min-h-0 flex-1 gap-0 lg:grid-cols-2 lg:divide-x lg:divide-zinc-800">
         <ResultList
           results={results}
-          selectedOffset={selected?.offset ?? null}
+          selectedKey={selected ? entryKey(selected) : null}
+          multiFile={files.length > 1}
           onSelect={(e) => void handleSelect(e)}
           hasMore={hasMore}
           loadingMore={loadingMore}

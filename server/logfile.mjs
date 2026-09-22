@@ -107,7 +107,7 @@ export async function firstEntryAtOrAfter(fd, pos, fileSize) {
  * @param {number|null} targetMs
  */
 export async function offsetForTime(fd, fileSize, targetMs) {
-  if (targetMs === null) return 0
+  if (targetMs === null || targetMs === undefined) return 0
   let lo = 0
   let hi = fileSize
 
@@ -134,7 +134,7 @@ export async function byteRangeForTimeFilter(path, timeStart, timeEnd) {
     const { size } = await stat(path)
     const start = await offsetForTime(fd, size, timeStart)
     let end = size
-    if (timeEnd !== null) {
+    if (timeEnd !== null && timeEnd !== undefined) {
       end = await offsetForTime(fd, size, timeEnd + 1)
       if (end < size) {
         const entry = await firstEntryAtOrAfter(fd, end, size)

@@ -8,6 +8,18 @@ export interface FileInfo {
   lastOffset: number
 }
 
+export interface OpenSummary {
+  fileCount: number
+  totalSize: number
+  firstTime: number | null
+  lastTime: number | null
+}
+
+export interface OpenFilesResponse {
+  files: FileInfo[]
+  summary: OpenSummary
+}
+
 export interface FacetCount {
   name: string
   count: number
@@ -19,8 +31,14 @@ export interface FileFacets {
   entryCount: number
 }
 
+export interface SearchCursor {
+  byPath: Record<string, number>
+  buffer?: SearchEntry[]
+}
+
 export interface SearchFilters {
-  path: string
+  path?: string
+  paths?: string[]
   timeStart?: number | null
   timeEnd?: number | null
   phrase?: string
@@ -30,12 +48,14 @@ export interface SearchFilters {
   caseSensitive?: boolean
   levels?: string[]
   channel?: string
-  cursor?: number
+  cursor?: number | SearchCursor | null
   limit?: number
 }
 
 export interface SearchEntry {
   type: 'entry'
+  path?: string
+  fileName?: string
   offset: number
   length: number
   time: number | null
@@ -47,15 +67,16 @@ export interface SearchEntry {
 
 export interface SearchMeta {
   type: 'meta'
-  scanStart: number
-  scanEnd: number
+  scanStart?: number
+  scanEnd?: number
   mode: 'content' | 'metadata'
   pageSize: number
+  fileCount?: number
 }
 
 export interface SearchDone {
   type: 'done'
-  nextCursor: number | null
+  nextCursor: number | SearchCursor | null
   hasMore: boolean
   count: number
 }
@@ -175,23 +196,25 @@ async function parseError(res: Response): Promise<string> {
   }
 }
 
-export async function fetchFacets(path: string, signal?: AbortSignal): Promise<FileFacets> {
+export async function fetchFacets(paths: string[], signal?: AbortSignal): Promise<FileFacets> {
+  const body = paths.length === 1 ? { path: paths[0] } : { paths }
   const res = await apiFetch('/api/facets', {
     method: 'POST',
-    body: JSON.stringify({ path }),
+    body: JSON.stringify(body),
     signal,
   })
   if (!res.ok) throw new Error(await parseError(res))
   return res.json() as Promise<FileFacets>
 }
 
-export async function openFile(path: string): Promise<FileInfo> {
+export async function openFiles(paths: string[]): Promise<OpenFilesResponse> {
+  const body = paths.length === 1 ? { path: paths[0] } : { paths }
   const res = await apiFetch('/api/open', {
     method: 'POST',
-    body: JSON.stringify({ path }),
+    body: JSON.stringify(body),
   })
   if (!res.ok) throw new Error(await parseError(res))
-  return res.json() as Promise<FileInfo>
+  return res.json() as Promise<OpenFilesResponse>
 }
 
 export async function fetchNeighbors(

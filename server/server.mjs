@@ -9,6 +9,7 @@ import { resolveEntry, readEntryAt, readNeighbors } from './entries.mjs'
 import { buildRgArgs, entryMatchesFilters } from './query.mjs'
 import { runRgOnRange, runRgCount } from './rg.mjs'
 import { collectFacets } from './facets.mjs'
+import { normalizePaths, openFilesInfo, mergeFacets, searchMultiFiles, countMultiFiles } from './multi.mjs'
 import { readJsonBody, sendError, sendJson, sendStreamError } from './util.mjs'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
@@ -60,12 +61,13 @@ export async function startServer({ port = 3847, token = randomBytes(16).toStrin
 async function handleApi(req, res, url) {
   if (req.method === 'POST' && url.pathname === '/api/open') {
     const body = await readJsonBody(req)
-    if (!body.path || typeof body.path !== 'string') {
-      sendError(res, 400, 'path required')
+    const paths = normalizePaths(body)
+    if (!paths?.length) {
+      sendError(res, 400, 'path or paths required')
       return
     }
     try {
-      const info = await openFileInfo(body.path)
+      const info = await openFilesInfo(paths)
       sendJson(res, info)
     } catch (err) {
       sendError(res, 400, err instanceof Error ? err.message : String(err))
@@ -102,12 +104,13 @@ async function handleApi(req, res, url) {
 
   if (req.method === 'POST' && url.pathname === '/api/facets') {
     const body = await readJsonBody(req)
-    if (!body.path || typeof body.path !== 'string') {
-      sendError(res, 400, 'path required')
+    const paths = normalizePaths(body)
+    if (!paths?.length) {
+      sendError(res, 400, 'path or paths required')
       return
     }
     try {
-      const facets = await collectFacets(body.path)
+      const facets = paths.length === 1 ? await collectFacets(paths[0]) : await mergeFacets(paths)
       sendJson(res, facets)
     } catch (err) {
       sendError(res, 400, err instanceof Error ? err.message : String(err))
@@ -158,8 +161,8 @@ async function handleSearch(req, res) {
 
   try {
     const body = await readJsonBody(req)
+    const paths = normalizePaths(body)
     const {
-      path,
       timeStart = null,
       timeEnd = null,
       phrase = '',
@@ -173,12 +176,31 @@ async function handleSearch(req, res) {
       limit = PAGE_SIZE,
     } = body
 
-    if (!path) {
-      sendError(res, 400, 'path required')
+    if (!paths?.length) {
+      sendError(res, 400, 'path or paths required')
       return
     }
 
     if (regex?.trim()) validateRegex(regex.trim(), regexFlags ?? 'i')
+
+    if (paths.length > 1 || (cursor && typeof cursor === 'object')) {
+      await handleMultiSearch(res, paths, {
+        timeStart,
+        timeEnd,
+        phrase,
+        excludePhrase,
+        regex,
+        regexFlags,
+        caseSensitive,
+        levels,
+        channel,
+        cursor: typeof cursor === 'object' ? cursor : null,
+        limit,
+      })
+      return
+    }
+
+    const path = paths[0]
 
     const { start, end } = await byteRangeForTimeFilter(path, timeStart, timeEnd)
     const scanStart = Math.max(start, cursor)
@@ -283,20 +305,72 @@ async function handleSearch(req, res) {
   }
 }
 
+/** @param {import('node:http').ServerResponse} res @param {string[]} paths @param {object} opts */
+async function handleMultiSearch(res, paths, opts) {
+  try {
+    const { mode, entries, hasMore, nextCursor } = await searchMultiFiles(
+      paths,
+      {
+        timeStart: opts.timeStart,
+        timeEnd: opts.timeEnd,
+        phrase: opts.phrase,
+        excludePhrase: opts.excludePhrase,
+        regex: opts.regex,
+        regexFlags: opts.regexFlags,
+        caseSensitive: opts.caseSensitive,
+        levels: opts.levels,
+        channel: opts.channel,
+      },
+      opts.limit,
+      opts.cursor,
+    )
+
+    res.writeHead(200, {
+      'Content-Type': 'application/x-ndjson',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    })
+
+    const write = (obj) => res.write(`${JSON.stringify(obj)}\n`)
+    write({ type: 'meta', mode, pageSize: opts.limit, fileCount: paths.length })
+    for (const entry of entries) write(entry)
+    write({ type: 'done', nextCursor, hasMore, count: entries.length })
+    res.end()
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    sendStreamError(res, msg)
+  }
+}
+
 /** @param {import('node:http').IncomingMessage} req @param {import('node:http').ServerResponse} res */
 async function handleCount(req, res) {
   const body = await readJsonBody(req)
-  const { path, timeStart = null, timeEnd = null, phrase = '', regex = '', regexFlags = 'i', caseSensitive = false, levels = [], channel = '' } = body
-  if (!path) {
-    sendError(res, 400, 'path required')
+  const paths = normalizePaths(body)
+  const { timeStart = null, timeEnd = null, phrase = '', regex = '', regexFlags = 'i', caseSensitive = false, levels = [], channel = '' } = body
+  if (!paths?.length) {
+    sendError(res, 400, 'path or paths required')
     return
   }
 
-  const { start, end } = await byteRangeForTimeFilter(path, timeStart, timeEnd)
   const { args } = buildRgArgs({ phrase, regex, regexFlags, caseSensitive, levels, channel })
 
   try {
-    const count = await runRgCount({ path, rangeStart: start, rangeEnd: end, args })
+    const count =
+      paths.length === 1
+        ? await (async () => {
+            const { start, end } = await byteRangeForTimeFilter(paths[0], timeStart, timeEnd)
+            return runRgCount({ path: paths[0], rangeStart: start, rangeEnd: end, args })
+          })()
+        : await countMultiFiles(paths, {
+            timeStart,
+            timeEnd,
+            phrase,
+            regex,
+            regexFlags,
+            caseSensitive,
+            levels,
+            channel,
+          })
     sendJson(res, { count })
   } catch {
     sendJson(res, { count: null })

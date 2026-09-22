@@ -29,6 +29,11 @@ function ContextEntry({ entry, muted = false }: { entry: NeighborEntry | SearchE
     >
       <div className="flex flex-wrap items-center gap-2 text-xs">
         <span className={`rounded px-2 py-0.5 font-medium ${levelColour(entry.level)}`}>{entry.level}</span>
+        {'fileName' in entry && entry.fileName && (
+          <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-zinc-400" title={'path' in entry ? entry.path : undefined}>
+            {entry.fileName}
+          </span>
+        )}
         <span className="text-zinc-500">{entry.channel}</span>
         <span className="text-zinc-500">{formatDateTime(entry.time)}</span>
         {entry.truncated && <span className="text-amber-500">truncated</span>}
