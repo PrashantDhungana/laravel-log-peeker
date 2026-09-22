@@ -7,11 +7,12 @@ import { PanelMaximizeButton } from './PanelMaximizeButton'
 
 interface ResultListProps {
   results: SearchEntry[]
+  searchPaths: string[]
   selectedKey: string | null
   onSelect: (entry: SearchEntry) => void
-  hasMore: boolean
-  loadingMore: boolean
-  onLoadMore: () => void
+  fileHasMore: Record<string, boolean>
+  loadingMoreByPath: Record<string, boolean>
+  onLoadMoreForFile: (path: string) => void
   totalCount: number | null
   maximized: boolean
   onToggleMaximize: () => void
@@ -26,6 +27,7 @@ interface FileGroup {
 type VirtualRow =
   | { kind: 'header'; path: string; fileName: string; count: number; collapsed: boolean }
   | { kind: 'entry'; entry: SearchEntry }
+  | { kind: 'load-more'; path: string }
 
 function entryKey(entry: SearchEntry): string {
   return `${entry.path ?? ''}:${entry.offset}`
@@ -35,6 +37,10 @@ function pathFromEntryKey(key: string): string | null {
   const idx = key.lastIndexOf(':')
   if (idx <= 0) return null
   return key.slice(0, idx)
+}
+
+function fileNameForPath(path: string, entryFileName?: string): string {
+  return entryFileName ?? path.split(/[/\\]/).pop() ?? path ?? 'Log'
 }
 
 function groupByFile(results: SearchEntry[]): FileGroup[] {
@@ -49,7 +55,7 @@ function groupByFile(results: SearchEntry[]): FileGroup[] {
       index.set(path, groupIndex)
       groups.push({
         path,
-        fileName: entry.fileName ?? path.split(/[/\\]/).pop() ?? path ?? 'Log',
+        fileName: fileNameForPath(path, entry.fileName),
         entries: [],
       })
     }
@@ -59,7 +65,39 @@ function groupByFile(results: SearchEntry[]): FileGroup[] {
   return groups
 }
 
-function buildRows(groups: FileGroup[], collapsed: Set<string>): VirtualRow[] {
+function orderedFileGroups(
+  results: SearchEntry[],
+  searchPaths: string[],
+): FileGroup[] {
+  const fromResults = groupByFile(results)
+  const byPath = new Map(fromResults.map((group) => [group.path, group]))
+  const groups: FileGroup[] = []
+
+  for (const path of searchPaths) {
+    const existing = byPath.get(path)
+    if (existing) {
+      groups.push(existing)
+      continue
+    }
+    groups.push({
+      path,
+      fileName: fileNameForPath(path),
+      entries: [],
+    })
+  }
+
+  for (const group of fromResults) {
+    if (!searchPaths.includes(group.path)) groups.push(group)
+  }
+
+  return groups
+}
+
+function buildRows(
+  groups: FileGroup[],
+  collapsed: Set<string>,
+  fileHasMore: Record<string, boolean>,
+): VirtualRow[] {
   const rows: VirtualRow[] = []
   for (const group of groups) {
     const isCollapsed = collapsed.has(group.path)
@@ -74,18 +112,28 @@ function buildRows(groups: FileGroup[], collapsed: Set<string>): VirtualRow[] {
       for (const entry of group.entries) {
         rows.push({ kind: 'entry', entry })
       }
+      if (fileHasMore[group.path]) {
+        rows.push({ kind: 'load-more', path: group.path })
+      }
     }
   }
   return rows
 }
 
+function rowHeight(row: VirtualRow | undefined): number {
+  if (row?.kind === 'header') return 44
+  if (row?.kind === 'load-more') return 44
+  return 72
+}
+
 export function ResultList({
   results,
+  searchPaths,
   selectedKey,
   onSelect,
-  hasMore,
-  loadingMore,
-  onLoadMore,
+  fileHasMore,
+  loadingMoreByPath,
+  onLoadMoreForFile,
   totalCount,
   maximized,
   onToggleMaximize,
@@ -93,8 +141,11 @@ export function ResultList({
   const parentRef = useRef<HTMLDivElement>(null)
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set())
 
-  const groups = useMemo(() => groupByFile(results), [results])
-  const rows = useMemo(() => buildRows(groups, collapsed), [groups, collapsed])
+  const groups = useMemo(
+    () => orderedFileGroups(results, searchPaths),
+    [results, searchPaths],
+  )
+  const rows = useMemo(() => buildRows(groups, collapsed, fileHasMore), [groups, collapsed, fileHasMore])
 
   useEffect(() => {
     setCollapsed(new Set())
@@ -115,7 +166,7 @@ export function ResultList({
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: (index) => (rows[index]?.kind === 'header' ? 44 : 72),
+    estimateSize: (index) => rowHeight(rows[index]),
     overscan: 8,
   })
 
@@ -150,23 +201,11 @@ export function ResultList({
           {groups.length > 1 && ` · ${groups.length} files`}
           {totalCount !== null && ` · ~${totalCount} line matches`}
         </span>
-        <div className="flex shrink-0 items-center gap-2">
-          {hasMore && (
-            <button
-              type="button"
-              onClick={onLoadMore}
-              disabled={loadingMore}
-              className="rounded-md border border-zinc-700 px-3 py-1 text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
-            >
-              {loadingMore ? 'Loading…' : 'Load more'}
-            </button>
-          )}
-          <PanelMaximizeButton
-            maximized={maximized}
-            onToggle={onToggleMaximize}
-            panelLabel="results"
-          />
-        </div>
+        <PanelMaximizeButton
+          maximized={maximized}
+          onToggle={onToggleMaximize}
+          panelLabel="results"
+        />
       </div>
 
       <div ref={parentRef} className="min-h-0 flex-1 overflow-auto">
@@ -193,6 +232,26 @@ export function ResultList({
                     {row.count} result{row.count === 1 ? '' : 's'}
                   </span>
                 </button>
+              )
+            }
+
+            if (row.kind === 'load-more') {
+              const loading = Boolean(loadingMoreByPath[row.path])
+              return (
+                <div
+                  key={`load-more-${row.path}`}
+                  className="absolute left-0 top-0 flex w-full items-center border-b border-zinc-800/80 px-4 py-2 pl-8"
+                  style={{ height: `${item.size}px`, transform: `translateY(${item.start}px)` }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => onLoadMoreForFile(row.path)}
+                    disabled={loading}
+                    className="rounded-md border border-zinc-700 px-3 py-1 text-xs text-zinc-300 hover:bg-zinc-800 disabled:opacity-50"
+                  >
+                    {loading ? 'Loading…' : 'Load more'}
+                  </button>
+                </div>
               )
             }
 

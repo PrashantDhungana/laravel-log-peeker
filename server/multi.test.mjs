@@ -26,4 +26,14 @@ describe('multi file support', () => {
     expect(entries.every((e) => e.fileName)).toBeTruthy()
     expect(typeof hasMore).toBe('boolean')
   })
+
+  it('includes each file on the first page of a multi-file search', async () => {
+    const sampleB = join(fileURLToPath(new URL('.', import.meta.url)), 'fixtures', 'sample-b.log')
+    const { entries, hasMoreByPath } = await searchMultiFiles([sample, sampleB], {}, 100, null)
+    const paths = new Set(entries.map((entry) => entry.path))
+    expect(paths.has(sample)).toBe(true)
+    expect(paths.has(sampleB)).toBe(true)
+    expect(hasMoreByPath?.[sample]).toBe(false)
+    expect(hasMoreByPath?.[sampleB]).toBe(false)
+  })
 })

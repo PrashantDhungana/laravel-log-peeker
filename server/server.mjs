@@ -1,7 +1,7 @@
 import { createServer } from 'node:http'
 import { open, stat } from 'node:fs/promises'
 import { createReadStream, existsSync } from 'node:fs'
-import { join, extname } from 'node:path'
+import { basename, join, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomBytes } from 'node:crypto'
 import { openFileInfo, byteRangeForTimeFilter } from './logfile.mjs'
@@ -12,11 +12,34 @@ import { collectFacets } from './facets.mjs'
 import { normalizePaths, openFilesInfo, mergeFacets, searchMultiFiles, countMultiFiles } from './multi.mjs'
 import { stageFileStream } from './staging.mjs'
 import { pickLogFilesWindows } from './picker.mjs'
-import { readJsonBody, sendError, sendJson, sendStreamError } from './util.mjs'
+import {
+  applyDevCors,
+  attachSocketSafety,
+  bindClientGuard,
+  readJsonBody,
+  sendError,
+  sendJson,
+  sendStreamError,
+} from './util.mjs'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const WEB_DIST = join(__dirname, '..', 'web-dist')
 const PAGE_SIZE = 100
+
+let socketExceptionGuardInstalled = false
+
+function installSocketExceptionGuard() {
+  if (socketExceptionGuardInstalled) return
+  socketExceptionGuardInstalled = true
+  process.on('uncaughtException', (err) => {
+    if (err && typeof err === 'object' && 'code' in err) {
+      const code = err.code
+      if (code === 'EOF' || code === 'ECONNRESET' || code === 'EPIPE') return
+    }
+    console.error(err)
+    process.exit(1)
+  })
+}
 
 /**
  * @param {object} opts
@@ -25,8 +48,13 @@ const PAGE_SIZE = 100
  * @param {boolean} [opts.openBrowser]
  */
 export async function startServer({ port = 3847, token = randomBytes(16).toString('hex'), openBrowser = false } = {}) {
+  installSocketExceptionGuard()
+
   const server = createServer(async (req, res) => {
+    const guard = bindClientGuard(req, res)
     try {
+      if (applyDevCors(req, res)) return
+
       const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`)
       const host = req.headers.host ?? ''
       if (!host.startsWith('127.0.0.1') && !host.startsWith('localhost')) {
@@ -42,25 +70,27 @@ export async function startServer({ port = 3847, token = randomBytes(16).toStrin
           sendError(res, 401, 'Unauthorized')
           return
         }
-        await handleApi(req, res, url)
+        await handleApi(req, res, url, guard)
         return
       }
 
       serveStatic(req, res, url.pathname)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
-      if (res.headersSent) sendStreamError(res, msg)
+      if (res.headersSent) sendStreamError(res, msg, guard)
       else sendError(res, 500, msg)
     }
   })
+
+  server.on('connection', (socket) => attachSocketSafety(socket))
 
   await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve))
   const baseUrl = `http://127.0.0.1:${port}?token=${token}`
   return { server, port, token, baseUrl, openBrowser }
 }
 
-/** @param {import('node:http').IncomingMessage} req @param {import('node:http').ServerResponse} res @param {URL} url */
-async function handleApi(req, res, url) {
+/** @param {import('node:http').IncomingMessage} req @param {import('node:http').ServerResponse} res @param {URL} url @param {ReturnType<typeof bindClientGuard>} guard */
+async function handleApi(req, res, url, guard) {
   if (req.method === 'POST' && url.pathname === '/api/open') {
     const body = await readJsonBody(req)
     const paths = normalizePaths(body)
@@ -78,7 +108,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/search') {
-    await handleSearch(req, res)
+    await handleSearch(req, res, guard)
     return
   }
 
@@ -100,7 +130,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/count') {
-    await handleCount(req, res)
+    await handleCount(req, res, guard)
     return
   }
 
@@ -112,9 +142,12 @@ async function handleApi(req, res, url) {
       return
     }
     try {
-      const facets = paths.length === 1 ? await collectFacets(paths[0]) : await mergeFacets(paths)
-      sendJson(res, facets)
+      const facets =
+        paths.length === 1 ? await collectFacets(paths[0]) : await mergeFacets(paths)
+      if (guard.isClosed()) return
+      sendJson(res, facets, guard)
     } catch (err) {
+      if (guard.signal.aborted) return
       sendError(res, 400, err instanceof Error ? err.message : String(err))
     }
     return
@@ -183,8 +216,8 @@ function validateRegex(pattern, flags) {
   }
 }
 
-/** @param {import('node:http').IncomingMessage} req @param {import('node:http').ServerResponse} res */
-async function handleSearch(req, res) {
+/** @param {import('node:http').IncomingMessage} req @param {import('node:http').ServerResponse} res @param {ReturnType<typeof bindClientGuard>} guard */
+async function handleSearch(req, res, guard) {
   /** @type {import('node:fs/promises').FileHandle | null} */
   let fd = null
 
@@ -203,6 +236,7 @@ async function handleSearch(req, res) {
       channel = '',
       cursor = 0,
       limit = PAGE_SIZE,
+      onlyPath = null,
     } = body
 
     if (!paths?.length) {
@@ -212,8 +246,10 @@ async function handleSearch(req, res) {
 
     if (regex?.trim()) validateRegex(regex.trim(), regexFlags ?? 'i')
 
-    if (paths.length > 1 || (cursor && typeof cursor === 'object')) {
-      await handleMultiSearch(res, paths, {
+    if (paths.length > 1 || (cursor && typeof cursor === 'object') || onlyPath) {
+      const scopedPaths =
+        onlyPath && typeof onlyPath === 'string' && paths.includes(onlyPath) ? paths : paths
+      await handleMultiSearch(res, scopedPaths, {
         timeStart,
         timeEnd,
         phrase,
@@ -225,7 +261,8 @@ async function handleSearch(req, res) {
         channel,
         cursor: typeof cursor === 'object' ? cursor : null,
         limit,
-      })
+        onlyPath: typeof onlyPath === 'string' && paths.includes(onlyPath) ? onlyPath : null,
+      }, guard)
       return
     }
 
@@ -234,16 +271,21 @@ async function handleSearch(req, res) {
     const { start, end } = await byteRangeForTimeFilter(path, timeStart, timeEnd)
     const scanStart = Math.max(start, cursor)
     if (scanStart >= end) {
-      res.writeHead(200, {
-        'Content-Type': 'application/x-ndjson',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive',
-      })
-      res.write(
+      if (guard.isClosed()) return
+      if (
+        !guard.writeHead(200, {
+          'Content-Type': 'application/x-ndjson',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        })
+      ) {
+        return
+      }
+      guard.write(
         `${JSON.stringify({ type: 'meta', scanStart, scanEnd: end, mode: 'metadata', pageSize: limit })}\n`,
       )
-      res.write(`${JSON.stringify({ type: 'done', nextCursor: null, hasMore: false, count: 0 })}\n`)
-      res.end()
+      guard.write(`${JSON.stringify({ type: 'done', nextCursor: null, hasMore: false, count: 0 })}\n`)
+      guard.end()
       return
     }
 
@@ -251,13 +293,21 @@ async function handleSearch(req, res) {
     const st = await stat(path)
     fd = await open(path, 'r')
 
-    res.writeHead(200, {
-      'Content-Type': 'application/x-ndjson',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-    })
+    if (guard.isClosed()) return
+    if (
+      !guard.writeHead(200, {
+        'Content-Type': 'application/x-ndjson',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      })
+    ) {
+      return
+    }
 
-    const write = (obj) => res.write(`${JSON.stringify(obj)}\n`)
+    const write = (obj) => {
+      if (guard.isClosed()) return false
+      return guard.write(`${JSON.stringify(obj)}\n`)
+    }
 
     write({
       type: 'meta',
@@ -289,6 +339,7 @@ async function handleSearch(req, res) {
         matchOffsets.push(fileOffset)
       },
       limit: maxRgMatches,
+      signal: guard.signal,
     })
 
     const seen = new Set()
@@ -296,6 +347,7 @@ async function handleSearch(req, res) {
     let nextCursor = null
 
     for (const fileOffset of matchOffsets) {
+      if (guard.isClosed()) return
       const entry = await resolveEntry(fd, fileOffset, st.size)
       if (!entry) continue
       if (seen.has(entry.offset)) continue
@@ -304,6 +356,8 @@ async function handleSearch(req, res) {
 
       write({
         type: 'entry',
+        path,
+        fileName: basename(path),
         offset: entry.offset,
         length: entry.length,
         time: entry.time,
@@ -319,25 +373,28 @@ async function handleSearch(req, res) {
       }
     }
 
+    if (guard.isClosed()) return
+
     if (emitted >= limit && nextCursor !== null && nextCursor < end) {
-      write({ type: 'done', nextCursor, hasMore: true, count: emitted })
+      write({ type: 'done', nextCursor, hasMore: true, hasMoreByPath: { [path]: true }, count: emitted })
     } else {
-      write({ type: 'done', nextCursor: null, hasMore: false, count: emitted })
+      write({ type: 'done', nextCursor: null, hasMore: false, hasMoreByPath: { [path]: false }, count: emitted })
     }
 
-    res.end()
+    guard.end()
   } catch (err) {
+    if (guard.signal.aborted) return
     const msg = err instanceof Error ? err.message : String(err)
-    sendStreamError(res, msg)
+    sendStreamError(res, msg, guard)
   } finally {
     if (fd) await fd.close()
   }
 }
 
-/** @param {import('node:http').ServerResponse} res @param {string[]} paths @param {object} opts */
-async function handleMultiSearch(res, paths, opts) {
+/** @param {import('node:http').ServerResponse} res @param {string[]} paths @param {object} opts @param {ReturnType<typeof bindClientGuard>} guard */
+async function handleMultiSearch(res, paths, opts, guard) {
   try {
-    const { mode, entries, hasMore, nextCursor } = await searchMultiFiles(
+    const { mode, entries, hasMore, hasMoreByPath, nextCursor } = await searchMultiFiles(
       paths,
       {
         timeStart: opts.timeStart,
@@ -352,27 +409,42 @@ async function handleMultiSearch(res, paths, opts) {
       },
       opts.limit,
       opts.cursor,
+      opts.onlyPath,
+      guard.signal,
     )
 
-    res.writeHead(200, {
-      'Content-Type': 'application/x-ndjson',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-    })
+    if (guard.isClosed()) return
 
-    const write = (obj) => res.write(`${JSON.stringify(obj)}\n`)
+    if (
+      !guard.writeHead(200, {
+        'Content-Type': 'application/x-ndjson',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      })
+    ) {
+      return
+    }
+
+    const write = (obj) => {
+      if (guard.isClosed()) return false
+      return guard.write(`${JSON.stringify(obj)}\n`)
+    }
     write({ type: 'meta', mode, pageSize: opts.limit, fileCount: paths.length })
-    for (const entry of entries) write(entry)
-    write({ type: 'done', nextCursor, hasMore, count: entries.length })
-    res.end()
+    for (const entry of entries) {
+      if (guard.isClosed()) return
+      write(entry)
+    }
+    write({ type: 'done', nextCursor, hasMore, hasMoreByPath, count: entries.length })
+    guard.end()
   } catch (err) {
+    if (guard.signal.aborted) return
     const msg = err instanceof Error ? err.message : String(err)
-    sendStreamError(res, msg)
+    sendStreamError(res, msg, guard)
   }
 }
 
-/** @param {import('node:http').IncomingMessage} req @param {import('node:http').ServerResponse} res */
-async function handleCount(req, res) {
+/** @param {import('node:http').IncomingMessage} req @param {import('node:http').ServerResponse} res @param {ReturnType<typeof bindClientGuard>} guard */
+async function handleCount(req, res, guard) {
   const body = await readJsonBody(req)
   const paths = normalizePaths(body)
   const { timeStart = null, timeEnd = null, phrase = '', regex = '', regexFlags = 'i', caseSensitive = false, levels = [], channel = '' } = body
@@ -388,21 +460,27 @@ async function handleCount(req, res) {
       paths.length === 1
         ? await (async () => {
             const { start, end } = await byteRangeForTimeFilter(paths[0], timeStart, timeEnd)
-            return runRgCount({ path: paths[0], rangeStart: start, rangeEnd: end, args })
+            return runRgCount({ path: paths[0], rangeStart: start, rangeEnd: end, args, signal: guard.signal })
           })()
-        : await countMultiFiles(paths, {
-            timeStart,
-            timeEnd,
-            phrase,
-            regex,
-            regexFlags,
-            caseSensitive,
-            levels,
-            channel,
-          })
-    sendJson(res, { count })
-  } catch {
-    sendJson(res, { count: null })
+        : await countMultiFiles(
+            paths,
+            {
+              timeStart,
+              timeEnd,
+              phrase,
+              regex,
+              regexFlags,
+              caseSensitive,
+              levels,
+              channel,
+            },
+            guard.signal,
+          )
+    if (guard.isClosed()) return
+    sendJson(res, { count }, guard)
+  } catch (err) {
+    if (guard.signal.aborted) return
+    sendJson(res, { count: null }, guard)
   }
 }
 

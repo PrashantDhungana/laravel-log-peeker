@@ -146,7 +146,7 @@ export function runRgOnRange({ path, rangeStart, rangeEnd, args, signal, onMatch
  * @param {number} opts.rangeEnd
  * @param {string[]} opts.args
  */
-export function runRgCount({ path, rangeStart, rangeEnd, args }) {
+export function runRgCount({ path, rangeStart, rangeEnd, args, signal }) {
   return new Promise((resolve, reject) => {
     const rgPath = getRgPath()
     const proc = spawn(rgPath, ['--count-matches', ...args, '-'], {
@@ -156,25 +156,52 @@ export function runRgCount({ path, rangeStart, rangeEnd, args }) {
 
     let stdout = ''
     let stderr = ''
+    let settled = false
+
+    const finish = (err, value) => {
+      if (settled) return
+      settled = true
+      try {
+        proc.kill()
+      } catch {
+        /* already dead */
+      }
+      try {
+        stream.destroy()
+      } catch {
+        /* ignore */
+      }
+      if (err) reject(err)
+      else resolve(value)
+    }
+
+    if (signal) {
+      signal.addEventListener('abort', () => finish(new Error('Aborted')), { once: true })
+    }
+
     proc.stdout.on('data', (d) => {
       stdout += d.toString()
     })
     proc.stderr.on('data', (d) => {
       stderr += d.toString()
     })
-    proc.on('error', reject)
+    proc.on('error', (err) => finish(err))
     proc.on('close', (code) => {
+      if (settled || signal?.aborted) return
       if (code === 0 || code === 1) {
         const n = parseInt(stdout.trim().split('\n')[0] ?? '0', 10)
-        resolve(Number.isNaN(n) ? 0 : n)
-      } else reject(new Error(stderr.trim() || `rg count exited ${code}`))
+        finish(null, Number.isNaN(n) ? 0 : n)
+      } else finish(new Error(stderr.trim() || `rg count exited ${code}`))
     })
 
     const stream = createReadStream(path, {
       start: rangeStart,
       end: rangeEnd > rangeStart ? rangeEnd - 1 : rangeStart,
     })
-    stream.on('error', reject)
+    stream.on('error', (err) => {
+      if (settled && err.code === 'EPIPE') return
+      finish(err)
+    })
     stream.pipe(proc.stdin)
   })
 }

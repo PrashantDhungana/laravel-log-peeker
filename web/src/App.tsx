@@ -15,7 +15,6 @@ import {
   type SearchFilters,
 } from './api'
 
-type MaximizedPanel = 'results' | 'detail' | null
 import { EntryDetail, NEIGHBOR_PAGE } from './components/EntryDetail'
 import { FileSelector } from './components/FileSelector'
 import { FilterBar, type FilterState } from './components/FilterBar'
@@ -23,6 +22,9 @@ import { OpenFile } from './components/OpenFile'
 import { ResizableSplitPane } from './components/ResizableSplitPane'
 import { ResultList } from './components/ResultList'
 import { timeRangeForFiles } from './lib/files'
+import { mergeFileResults } from './lib/results'
+
+type MaximizedPanel = 'results' | 'detail' | null
 
 function defaultFilters(firstTime: number | null, lastTime: number | null): FilterState {
   return {
@@ -65,10 +67,10 @@ export default function App() {
   const [facets, setFacets] = useState<FileFacets | null>(null)
   const [facetsLoading, setFacetsLoading] = useState(false)
   const [results, setResults] = useState<SearchEntry[]>([])
-  const [nextCursor, setNextCursor] = useState<number | SearchCursor | null>(null)
-  const [hasMore, setHasMore] = useState(false)
+  const [searchCursor, setSearchCursor] = useState<number | SearchCursor | null>(null)
+  const [fileHasMore, setFileHasMore] = useState<Record<string, boolean>>({})
+  const [loadingMoreByPath, setLoadingMoreByPath] = useState<Record<string, boolean>>({})
   const [searching, setSearching] = useState(false)
-  const [loadingMore, setLoadingMore] = useState(false)
   const [searchError, setSearchError] = useState<string | null>(null)
   const [totalCount, setTotalCount] = useState<number | null>(null)
 
@@ -84,9 +86,10 @@ export default function App() {
   const [loadingBelow, setLoadingBelow] = useState(false)
   const [maximizedPanel, setMaximizedPanel] = useState<MaximizedPanel>(null)
 
-  const searchAbort = useRef<AbortController | null>(null)
-  const countAbort = useRef<AbortController | null>(null)
-  const facetsAbort = useRef<AbortController | null>(null)
+  const searchGeneration = useRef(0)
+  const countGeneration = useRef(0)
+  const facetsGeneration = useRef(0)
+  const loadMoreGeneration = useRef<Record<string, number>>({})
 
   const fileByPath = useCallback(
     (path: string) => files.find((f) => f.path === path),
@@ -106,19 +109,18 @@ export default function App() {
 
   const loadFacets = useCallback(
     async (paths: string[]) => {
-      facetsAbort.current?.abort()
-      const controller = new AbortController()
-      facetsAbort.current = controller
+      const generation = ++facetsGeneration.current
       setFacets(null)
       setFacetsLoading(true)
       try {
-        const data = await fetchFacets(paths, controller.signal)
+        const data = await fetchFacets(paths)
+        if (generation !== facetsGeneration.current) return
         applyFacets(data)
-      } catch (err) {
-        if (err instanceof Error && err.name === 'AbortError') return
+      } catch {
+        if (generation !== facetsGeneration.current) return
         setFacets(null)
       } finally {
-        setFacetsLoading(false)
+        if (generation === facetsGeneration.current) setFacetsLoading(false)
       }
     },
     [applyFacets],
@@ -142,11 +144,11 @@ export default function App() {
       setSelected(null)
       setEntryBody(null)
       resetContext()
-      setNextCursor(null)
-      setHasMore(false)
+      setSearchCursor(null)
+      setFileHasMore({})
+      setLoadingMoreByPath({})
       setTotalCount(null)
       setFacets(null)
-      facetsAbort.current?.abort()
       try {
         const info = await openFiles(paths)
         const allPaths = info.files.map((f) => f.path)
@@ -196,8 +198,9 @@ export default function App() {
       setSelected(null)
       setEntryBody(null)
       resetContext()
-      setNextCursor(null)
-      setHasMore(false)
+      setSearchCursor(null)
+      setFileHasMore({})
+      setLoadingMoreByPath({})
       setTotalCount(null)
       setSearchError(null)
       const { firstTime, lastTime } = timeRangeForFiles(files, paths)
@@ -233,58 +236,115 @@ export default function App() {
     [searchPaths, filters],
   )
 
-  const runSearch = useCallback(
-    async (append = false, cursor: number | SearchCursor | null = null) => {
-      if (!searchPaths.length) return
-
-      searchAbort.current?.abort()
-      countAbort.current?.abort()
-      const controller = new AbortController()
-      searchAbort.current = controller
-
-      if (append) setLoadingMore(true)
-      else {
-        setSearching(true)
-        setResults([])
-        setSelected(null)
-        setEntryBody(null)
-        resetContext()
-        setNextCursor(null)
-        setHasMore(false)
-        setTotalCount(null)
+  const applySearchDone = useCallback(
+    (event: { nextCursor: number | SearchCursor | null; hasMore: boolean; hasMoreByPath?: Record<string, boolean> }) => {
+      setSearchCursor(event.nextCursor)
+      if (event.hasMoreByPath) {
+        setFileHasMore(event.hasMoreByPath)
+      } else if (searchPaths.length === 1) {
+        setFileHasMore({ [searchPaths[0]]: event.hasMore })
       }
+    },
+    [searchPaths],
+  )
+
+  const runSearch = useCallback(async () => {
+    if (!searchPaths.length) return
+
+    const generation = ++searchGeneration.current
+    const countGen = ++countGeneration.current
+
+    setSearching(true)
+    setResults([])
+    setSelected(null)
+    setEntryBody(null)
+    resetContext()
+    setSearchCursor(null)
+    setFileHasMore({})
+    setLoadingMoreByPath({})
+    setTotalCount(null)
+    setSearchError(null)
+
+    try {
+      const page: SearchEntry[] = []
+      for await (const event of streamSearch(buildSearchFilters(null))) {
+        if (generation !== searchGeneration.current) return
+        if (event.type === 'error') throw new Error(event.message)
+        if (event.type === 'entry') page.push(event)
+        if (event.type === 'done') applySearchDone(event)
+      }
+      if (generation !== searchGeneration.current) return
+      setResults(page)
+
+      void countMatches(buildSearchFilters(null)).then((count) => {
+        if (countGen === countGeneration.current) setTotalCount(count)
+      })
+    } catch (err) {
+      if (generation !== searchGeneration.current) return
+      setSearchError(err instanceof Error ? err.message : String(err))
+    } finally {
+      if (generation === searchGeneration.current) setSearching(false)
+    }
+  }, [searchPaths, buildSearchFilters, resetContext, applySearchDone])
+
+  const handleSearch = () => void runSearch()
+
+  const loadMoreForFile = useCallback(
+    async (path: string) => {
+      if (!searchPaths.length || loadingMoreByPath[path] || !fileHasMore[path]) return
+
+      const generation = (loadMoreGeneration.current[path] ?? 0) + 1
+      loadMoreGeneration.current[path] = generation
+
+      setLoadingMoreByPath((prev) => ({ ...prev, [path]: true }))
       setSearchError(null)
 
-      const countController = new AbortController()
-      countAbort.current = countController
-      void countMatches(buildSearchFilters(cursor), countController.signal).then(setTotalCount)
+      const base = buildSearchFilters(null)
+      const filters: SearchFilters =
+        searchPaths.length === 1
+          ? {
+              ...base,
+              path: searchPaths[0],
+              cursor: typeof searchCursor === 'number' ? searchCursor : 0,
+            }
+          : {
+              ...base,
+              paths: searchPaths,
+              cursor: searchCursor ?? { byPath: {}, buffer: [] },
+              onlyPath: path,
+            }
 
       try {
         const page: SearchEntry[] = []
-        for await (const event of streamSearch(buildSearchFilters(cursor), controller.signal)) {
+        for await (const event of streamSearch(filters)) {
+          if (generation !== loadMoreGeneration.current[path]) return
           if (event.type === 'error') throw new Error(event.message)
           if (event.type === 'entry') page.push(event)
           if (event.type === 'done') {
-            setNextCursor(event.nextCursor)
-            setHasMore(event.hasMore)
+            setSearchCursor(event.nextCursor)
+            if (event.hasMoreByPath) {
+              setFileHasMore((prev) => ({ ...prev, ...event.hasMoreByPath }))
+            } else {
+              setFileHasMore((prev) => ({ ...prev, [path]: event.hasMore }))
+            }
           }
         }
-        setResults((prev) => (append ? [...prev, ...page] : page))
+        if (generation !== loadMoreGeneration.current[path]) return
+        setResults((prev) => mergeFileResults(prev, path, page))
       } catch (err) {
-        if (err instanceof Error && err.name === 'AbortError') return
+        if (generation !== loadMoreGeneration.current[path]) return
         setSearchError(err instanceof Error ? err.message : String(err))
       } finally {
-        setSearching(false)
-        setLoadingMore(false)
+        if (generation !== loadMoreGeneration.current[path]) return
+        setLoadingMoreByPath((prev) => {
+          const next = { ...prev }
+          delete next[path]
+          return next
+        })
       }
     },
-    [searchPaths, buildSearchFilters, resetContext],
+    [searchPaths, searchCursor, fileHasMore, loadingMoreByPath, buildSearchFilters],
   )
-
-  const handleSearch = () => void runSearch(false, null)
-  const handleLoadMore = () => {
-    if (nextCursor !== null) void runSearch(true, nextCursor)
-  }
 
   const handleSelect = useCallback(
     async (entry: SearchEntry) => {
@@ -429,11 +489,12 @@ export default function App() {
           {maximizedPanel !== 'detail' && (
             <ResultList
               results={results}
+              searchPaths={searchPaths}
               selectedKey={selected ? entryKey(selected) : null}
               onSelect={(e) => void handleSelect(e)}
-              hasMore={hasMore}
-              loadingMore={loadingMore}
-              onLoadMore={handleLoadMore}
+              fileHasMore={fileHasMore}
+              loadingMoreByPath={loadingMoreByPath}
+              onLoadMoreForFile={(filePath) => void loadMoreForFile(filePath)}
               totalCount={totalCount}
               maximized
               onToggleMaximize={() => toggleMaximize('results')}
@@ -463,11 +524,12 @@ export default function App() {
           left={
             <ResultList
               results={results}
+              searchPaths={searchPaths}
               selectedKey={selected ? entryKey(selected) : null}
               onSelect={(e) => void handleSelect(e)}
-              hasMore={hasMore}
-              loadingMore={loadingMore}
-              onLoadMore={handleLoadMore}
+              fileHasMore={fileHasMore}
+              loadingMoreByPath={loadingMoreByPath}
+              onLoadMoreForFile={(filePath) => void loadMoreForFile(filePath)}
               totalCount={totalCount}
               maximized={false}
               onToggleMaximize={() => toggleMaximize('results')}

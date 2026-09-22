@@ -50,6 +50,7 @@ export interface SearchFilters {
   channel?: string
   cursor?: number | SearchCursor | null
   limit?: number
+  onlyPath?: string
 }
 
 export interface SearchEntry {
@@ -78,6 +79,7 @@ export interface SearchDone {
   type: 'done'
   nextCursor: number | SearchCursor | null
   hasMore: boolean
+  hasMoreByPath?: Record<string, boolean>
   count: number
 }
 
@@ -165,23 +167,42 @@ function apiHeaders(): HeadersInit {
   }
 }
 
+function apiOrigin(): string {
+  const origin = import.meta.env.VITE_API_ORIGIN
+  return typeof origin === 'string' && origin.trim() ? origin.trim().replace(/\/$/, '') : ''
+}
+
+function apiUrl(path: string): string {
+  const normalized = path.startsWith('/') ? path : `/${path}`
+  const origin = apiOrigin()
+  return origin ? `${origin}${normalized}` : normalized
+}
+
 function withToken(path: string): string {
   const sep = path.includes('?') ? '&' : '?'
   return `${path}${sep}token=${encodeURIComponent(getToken())}`
 }
 
 async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
-  const res = await fetch(withToken(path), {
-    ...init,
-    headers: { ...apiHeaders(), ...init?.headers },
-  })
+  let res: Response
+  try {
+    res = await fetch(withToken(apiUrl(path)), {
+      ...init,
+      headers: { ...apiHeaders(), ...init?.headers },
+    })
+  } catch {
+    const hint = apiOrigin()
+      ? 'Could not reach the Storage Peeker API on port 3847. Restart npm run dev.'
+      : 'Could not reach the Storage Peeker API. Restart npm run dev and open the URL from the terminal.'
+    throw new Error(hint)
+  }
   if (res.status !== 401) return res
 
   sessionStorage.removeItem(TOKEN_STORAGE_KEY)
   const fromEnv = tokenFromEnv()
   if (fromEnv) rememberToken(fromEnv)
 
-  return fetch(withToken(path), {
+  return fetch(withToken(apiUrl(path)), {
     ...init,
     headers: { ...apiHeaders(), ...init?.headers },
   })
