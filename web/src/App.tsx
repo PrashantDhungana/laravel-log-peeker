@@ -19,6 +19,7 @@ import { FileSelector } from './components/FileSelector'
 import { FilterBar, type FilterState } from './components/FilterBar'
 import { OpenFile } from './components/OpenFile'
 import { ResultList } from './components/ResultList'
+import { timeRangeForFiles } from './lib/files'
 
 function defaultFilters(firstTime: number | null, lastTime: number | null): FilterState {
   return {
@@ -148,7 +149,8 @@ export default function App() {
         setFiles(info.files)
         setSearchPaths(allPaths)
         setSummary(info.summary)
-        setFilters(defaultFilters(info.summary.firstTime, info.summary.lastTime))
+        const { firstTime, lastTime } = timeRangeForFiles(info.files, allPaths)
+        setFilters(defaultFilters(firstTime, lastTime))
         void loadFacets(allPaths)
       } catch (err) {
         setFiles([])
@@ -194,9 +196,15 @@ export default function App() {
       setHasMore(false)
       setTotalCount(null)
       setSearchError(null)
+      const { firstTime, lastTime } = timeRangeForFiles(files, paths)
+      setFilters((prev) => ({
+        ...prev,
+        timeStart: firstTime,
+        timeEnd: lastTime,
+      }))
       if (paths.length) void loadFacets(paths)
     },
-    [resetContext, loadFacets],
+    [files, resetContext, loadFacets],
   )
 
   const buildSearchFilters = useCallback(
