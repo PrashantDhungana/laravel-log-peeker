@@ -126,17 +126,8 @@ export function FilterBar({
         {!expanded && <FilterSummary filters={filters} facets={facets} searchScope={searchScope} />}
 
         {facetsLoading && (
-          <span className="text-xs text-zinc-500">Scanning log…</span>
+          <span className="ml-auto text-xs text-zinc-500">Scanning log…</span>
         )}
-
-        <button
-          type="button"
-          onClick={onSearch}
-          disabled={disabled || searching}
-          className="ml-auto shrink-0 rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {searching ? 'Searching…' : 'Search'}
-        </button>
       </div>
 
       {expanded && (
@@ -271,6 +262,17 @@ export function FilterBar({
           </div>
         </div>
       )}
+
+      <div className="flex justify-start border-t border-zinc-800 px-3 py-2">
+        <button
+          type="button"
+          onClick={onSearch}
+          disabled={disabled || searching}
+          className="rounded-md bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {searching ? 'Searching…' : 'Search'}
+        </button>
+      </div>
     </section>
   )
 }

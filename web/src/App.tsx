@@ -14,10 +14,13 @@ import {
   type SearchEntry,
   type SearchFilters,
 } from './api'
+
+type MaximizedPanel = 'results' | 'detail' | null
 import { EntryDetail, NEIGHBOR_PAGE } from './components/EntryDetail'
 import { FileSelector } from './components/FileSelector'
 import { FilterBar, type FilterState } from './components/FilterBar'
 import { OpenFile } from './components/OpenFile'
+import { ResizableSplitPane } from './components/ResizableSplitPane'
 import { ResultList } from './components/ResultList'
 import { timeRangeForFiles } from './lib/files'
 
@@ -79,6 +82,7 @@ export default function App() {
   const [hasMoreBelow, setHasMoreBelow] = useState(false)
   const [loadingAbove, setLoadingAbove] = useState(false)
   const [loadingBelow, setLoadingBelow] = useState(false)
+  const [maximizedPanel, setMaximizedPanel] = useState<MaximizedPanel>(null)
 
   const searchAbort = useRef<AbortController | null>(null)
   const countAbort = useRef<AbortController | null>(null)
@@ -355,80 +359,140 @@ export default function App() {
     }
   }, [files, selected, loadingBelow, contextBelow])
 
+  const toggleMaximize = useCallback((panel: Exclude<MaximizedPanel, null>) => {
+    setMaximizedPanel((current) => (current === panel ? null : panel))
+  }, [])
+
+  useEffect(() => {
+    if (!maximizedPanel) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMaximizedPanel(null)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [maximizedPanel])
+
   return (
     <div className="flex h-screen flex-col">
-      <header className="flex shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900 px-3 py-2">
-        <div className="shrink-0">
-          <h1 className="text-sm font-semibold leading-tight">Storage Peeker</h1>
-        </div>
-        <OpenFile
-          pathsInput={pathsInput}
-          onPathsInputChange={setPathsInput}
-          onOpen={handleOpen}
-          onPathsDropped={handlePathsDropped}
-          loading={openLoading}
-          error={openError}
-          files={files}
-          summary={summary}
-        />
-      </header>
+      {!maximizedPanel && (
+        <>
+          <header className="flex shrink-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900 px-3 py-2">
+            <div className="shrink-0">
+              <h1 className="text-sm font-semibold leading-tight">Storage Peeker</h1>
+            </div>
+            <OpenFile
+              pathsInput={pathsInput}
+              onPathsInputChange={setPathsInput}
+              onOpen={handleOpen}
+              onPathsDropped={handlePathsDropped}
+              loading={openLoading}
+              error={openError}
+              files={files}
+              summary={summary}
+            />
+          </header>
 
-      <FileSelector
-        files={files}
-        selectedPaths={searchPaths}
-        onChange={handleSearchPathsChange}
-        disabled={openLoading}
-      />
+          <FileSelector
+            files={files}
+            selectedPaths={searchPaths}
+            onChange={handleSearchPathsChange}
+            disabled={openLoading}
+          />
 
-      <FilterBar
-        filters={filters}
-        facets={facets}
-        facetsLoading={facetsLoading}
-        searchScope={
-          files.length > 1
-            ? searchPaths.length === files.length
-              ? `All ${files.length} files`
-              : `${searchPaths.length} of ${files.length} files`
-            : null
-        }
-        onChange={setFilters}
-        onSearch={handleSearch}
-        searching={searching}
-        disabled={!searchPaths.length}
-      />
+          <FilterBar
+            filters={filters}
+            facets={facets}
+            facetsLoading={facetsLoading}
+            searchScope={
+              files.length > 1
+                ? searchPaths.length === files.length
+                  ? `All ${files.length} files`
+                  : `${searchPaths.length} of ${files.length} files`
+                : null
+            }
+            onChange={setFilters}
+            onSearch={handleSearch}
+            searching={searching}
+            disabled={!searchPaths.length}
+          />
 
-      {searchError && (
-        <p className="shrink-0 border-b border-red-900/50 bg-red-950/30 px-3 py-1.5 text-xs text-red-400">
-          {searchError}
-        </p>
+          {searchError && (
+            <p className="shrink-0 border-b border-red-900/50 bg-red-950/30 px-3 py-1.5 text-xs text-red-400">
+              {searchError}
+            </p>
+          )}
+        </>
       )}
 
-      <div className="grid min-h-0 flex-1 gap-0 lg:grid-cols-2 lg:divide-x lg:divide-zinc-800">
-        <ResultList
-          results={results}
-          selectedKey={selected ? entryKey(selected) : null}
-          multiFile={searchPaths.length > 1}
-          onSelect={(e) => void handleSelect(e)}
-          hasMore={hasMore}
-          loadingMore={loadingMore}
-          onLoadMore={handleLoadMore}
-          totalCount={totalCount}
+      {maximizedPanel ? (
+        <div className="relative min-h-0 flex-1">
+          {maximizedPanel !== 'detail' && (
+            <ResultList
+              results={results}
+              selectedKey={selected ? entryKey(selected) : null}
+              onSelect={(e) => void handleSelect(e)}
+              hasMore={hasMore}
+              loadingMore={loadingMore}
+              onLoadMore={handleLoadMore}
+              totalCount={totalCount}
+              maximized
+              onToggleMaximize={() => toggleMaximize('results')}
+            />
+          )}
+          {maximizedPanel !== 'results' && (
+            <EntryDetail
+              entry={selected}
+              body={entryBody}
+              loading={entryLoading}
+              error={entryError}
+              above={contextAbove}
+              below={contextBelow}
+              hasMoreAbove={hasMoreAbove}
+              hasMoreBelow={hasMoreBelow}
+              loadingAbove={loadingAbove}
+              loadingBelow={loadingBelow}
+              onLoadAbove={() => void handleLoadAbove()}
+              onLoadBelow={() => void handleLoadBelow()}
+              maximized
+              onToggleMaximize={() => toggleMaximize('detail')}
+            />
+          )}
+        </div>
+      ) : (
+        <ResizableSplitPane
+          left={
+            <ResultList
+              results={results}
+              selectedKey={selected ? entryKey(selected) : null}
+              onSelect={(e) => void handleSelect(e)}
+              hasMore={hasMore}
+              loadingMore={loadingMore}
+              onLoadMore={handleLoadMore}
+              totalCount={totalCount}
+              maximized={false}
+              onToggleMaximize={() => toggleMaximize('results')}
+            />
+          }
+          right={
+            <EntryDetail
+              entry={selected}
+              body={entryBody}
+              loading={entryLoading}
+              error={entryError}
+              above={contextAbove}
+              below={contextBelow}
+              hasMoreAbove={hasMoreAbove}
+              hasMoreBelow={hasMoreBelow}
+              loadingAbove={loadingAbove}
+              loadingBelow={loadingBelow}
+              onLoadAbove={() => void handleLoadAbove()}
+              onLoadBelow={() => void handleLoadBelow()}
+              maximized={false}
+              onToggleMaximize={() => toggleMaximize('detail')}
+            />
+          }
         />
-        <EntryDetail
-          entry={selected}
-          body={entryBody}
-          loading={entryLoading}
-          error={entryError}
-          above={contextAbove}
-          below={contextBelow}
-          hasMoreAbove={hasMoreAbove}
-          hasMoreBelow={hasMoreBelow}
-          loadingAbove={loadingAbove}
-          loadingBelow={loadingBelow}
-          onLoadAbove={() => void handleLoadAbove()}
-          onLoadBelow={() => void handleLoadBelow()}
-        />
-      </div>
+      )}
     </div>
   )
 }

@@ -1,6 +1,7 @@
 import type { NeighborEntry, SearchEntry } from '../api'
 import { formatDateTime } from '../lib/format'
 import { levelColour } from '../lib/levels'
+import { PanelMaximizeButton } from './PanelMaximizeButton'
 
 const NEIGHBOR_PAGE = 3
 
@@ -17,6 +18,8 @@ interface EntryDetailProps {
   loadingBelow: boolean
   onLoadAbove: () => void
   onLoadBelow: () => void
+  maximized: boolean
+  onToggleMaximize: () => void
 }
 
 function ContextEntry({ entry, muted = false }: { entry: NeighborEntry | SearchEntry; muted?: boolean }) {
@@ -61,6 +64,8 @@ export function EntryDetail({
   loadingBelow,
   onLoadAbove,
   onLoadBelow,
+  maximized,
+  onToggleMaximize,
 }: EntryDetailProps) {
   if (!entry) {
     return (
@@ -76,7 +81,24 @@ export function EntryDetail({
   }
 
   return (
-    <aside className="flex min-h-0 flex-1 flex-col bg-zinc-950/40">
+    <aside
+      className={
+        maximized
+          ? 'fixed inset-0 z-50 flex flex-col bg-zinc-950'
+          : 'flex min-h-0 flex-1 flex-col bg-zinc-950/40'
+      }
+    >
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-950 px-4 py-2 text-xs text-zinc-500">
+        <span className="truncate text-zinc-300">
+          {entry.fileName ?? 'Entry detail'}
+          {entry.channel && ` · ${entry.channel}`}
+        </span>
+        <PanelMaximizeButton
+          maximized={maximized}
+          onToggle={onToggleMaximize}
+          panelLabel="entry detail"
+        />
+      </div>
       <div className="min-h-0 flex-1 overflow-auto p-3">
         <div className="flex flex-col gap-3">
           {(hasMoreAbove || above.length > 0) && (
