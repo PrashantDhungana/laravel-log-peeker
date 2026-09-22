@@ -59,7 +59,7 @@ export function EntryDetail({
 }: EntryDetailProps) {
   if (!entry) {
     return (
-      <aside className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 text-sm text-zinc-500">
+      <aside className="flex min-h-0 flex-1 items-center justify-center bg-zinc-950/40 p-6 text-sm text-zinc-500">
         Select a result to view the full entry.
       </aside>
     )
@@ -71,12 +71,8 @@ export function EntryDetail({
   }
 
   return (
-    <aside className="flex min-h-0 flex-col rounded-lg border border-zinc-800 bg-zinc-900/40">
-      <div className="border-b border-zinc-800 px-4 py-3">
-        <p className="text-xs text-zinc-500">Entry detail with surrounding log context</p>
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-auto p-4">
+    <aside className="flex min-h-0 flex-1 flex-col bg-zinc-950/40">
+      <div className="min-h-0 flex-1 overflow-auto p-3">
         <div className="flex flex-col gap-3">
           {(hasMoreAbove || above.length > 0) && (
             <div className="flex flex-col gap-2">

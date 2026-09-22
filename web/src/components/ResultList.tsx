@@ -34,14 +34,14 @@ export function ResultList({
 
   if (results.length === 0) {
     return (
-      <section className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-8 text-center text-sm text-zinc-500">
+      <section className="flex min-h-0 flex-1 items-center justify-center bg-zinc-950/40 p-6 text-center text-sm text-zinc-500">
         No results yet. Open a log file and run a search.
       </section>
     )
   }
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col rounded-lg border border-zinc-800 bg-zinc-900/40">
+    <section className="flex min-h-0 flex-1 flex-col bg-zinc-950/40">
       <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2 text-xs text-zinc-500">
         <span>
           {results.length} result{results.length === 1 ? '' : 's'}
