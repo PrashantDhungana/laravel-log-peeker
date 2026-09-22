@@ -2,6 +2,14 @@
 
 Local Laravel log search powered by ripgrep. Open one or more log files by absolute path, filter by time, phrase, or regex, and browse results instantly — even on multi-GB files. Nothing leaves your machine.
 
+![Laravel Log Peeker — filters, search results, and entry detail with stack trace](docs/screenshots/app-features.png)
+
+## Why
+
+Debugging Laravel apps often means digging through `storage/logs` to work out what happened. As files grow — sometimes to gigabytes — that gets painful: scrolling in an editor, grepping from the terminal, or pasting chunks into chat tools just to find one error or time window.
+
+Laravel Log Peeker is built for that day-to-day workflow. Open a log locally, filter by time, phrase, regex, level, or channel, and inspect full entries (including stack traces and neighbouring context) without uploading anything or waiting on a full-file index first.
+
 ## How it works
 
 Laravel Log Peeker runs a small Node server on `127.0.0.1` that:
