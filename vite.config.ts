@@ -16,12 +16,9 @@ export default defineConfig({
         target: 'http://127.0.0.1:3847',
         changeOrigin: true,
         configure: (proxy) => {
-          proxy.on('proxyReq', (proxyReq, req) => {
+          proxy.on('proxyReq', (proxyReq) => {
             const token = process.env.PEEKER_TOKEN
-            if (!token) return
-            if (!req.url?.includes('token=')) {
-              proxyReq.setHeader('x-peeker-token', token)
-            }
+            if (token) proxyReq.setHeader('x-peeker-token', token)
           })
         },
       },

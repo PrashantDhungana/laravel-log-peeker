@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { formatDateTime, inputValueToMs, msToInputValue } from '../lib/format'
-import { LEVELS, levelColour } from '../lib/levels'
+import { levelColour } from '../lib/levels'
+import type { FileFacets } from '../api'
 
 export interface FilterState {
   timeStart: number | null
@@ -16,6 +17,8 @@ export interface FilterState {
 
 interface FilterBarProps {
   filters: FilterState
+  facets: FileFacets | null
+  facetsLoading: boolean
   onChange: (filters: FilterState) => void
   onSearch: () => void
   searching: boolean
@@ -33,7 +36,13 @@ function activeFilterCount(filters: FilterState): number {
   return n
 }
 
-function FilterSummary({ filters }: { filters: FilterState }) {
+function FilterSummary({
+  filters,
+  facets,
+}: {
+  filters: FilterState
+  facets: FileFacets | null
+}) {
   const chips: string[] = []
   if (filters.phrase.trim()) chips.push(`"${filters.phrase.trim()}"`)
   if (filters.regex.trim()) chips.push(`/ ${filters.regex.trim()} /`)
@@ -46,6 +55,14 @@ function FilterSummary({ filters }: { filters: FilterState }) {
   if (filters.caseSensitive) chips.push('Aa')
 
   if (chips.length === 0) {
+    if (facets) {
+      return (
+        <span className="text-xs text-zinc-500">
+          All {facets.entryCount.toLocaleString()} entries · {facets.levels.length} levels ·{' '}
+          {facets.channels.length} channels
+        </span>
+      )
+    }
     return <span className="text-xs text-zinc-500">All entries in time range</span>
   }
 
@@ -63,7 +80,15 @@ function FilterSummary({ filters }: { filters: FilterState }) {
   )
 }
 
-export function FilterBar({ filters, onChange, onSearch, searching, disabled }: FilterBarProps) {
+export function FilterBar({
+  filters,
+  facets,
+  facetsLoading,
+  onChange,
+  onSearch,
+  searching,
+  disabled,
+}: FilterBarProps) {
   const [expanded, setExpanded] = useState(false)
   const activeCount = activeFilterCount(filters)
 
@@ -93,7 +118,11 @@ export function FilterBar({ filters, onChange, onSearch, searching, disabled }: 
           Filters{activeCount > 0 ? ` (${activeCount})` : ''} {expanded ? '▴' : '▾'}
         </button>
 
-        {!expanded && <FilterSummary filters={filters} />}
+        {!expanded && <FilterSummary filters={filters} facets={facets} />}
+
+        {facetsLoading && (
+          <span className="text-xs text-zinc-500">Scanning log…</span>
+        )}
 
         <button
           type="button"
@@ -168,13 +197,29 @@ export function FilterBar({ filters, onChange, onSearch, searching, disabled }: 
             </label>
             <label className="flex flex-col gap-0.5 text-xs">
               <span className="text-zinc-500">Channel</span>
-              <input
-                type="text"
-                value={filters.channel}
-                onChange={(e) => set('channel', e.target.value)}
-                placeholder="production"
-                className={inputClass}
-              />
+              {facets && facets.channels.length > 0 ? (
+                <select
+                  value={filters.channel}
+                  onChange={(e) => set('channel', e.target.value)}
+                  className={inputClass}
+                >
+                  <option value="">All channels</option>
+                  {facets.channels.map((ch) => (
+                    <option key={ch.name} value={ch.name}>
+                      {ch.name} ({ch.count.toLocaleString()})
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={filters.channel}
+                  onChange={(e) => set('channel', e.target.value)}
+                  placeholder={facetsLoading ? 'Scanning…' : 'Any channel'}
+                  disabled={facetsLoading}
+                  className={inputClass}
+                />
+              )}
             </label>
             <label className="flex items-end gap-2 pb-1 text-xs">
               <input
@@ -187,25 +232,37 @@ export function FilterBar({ filters, onChange, onSearch, searching, disabled }: 
             </label>
           </div>
 
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {LEVELS.map((level) => (
-              <label
-                key={level}
-                className={`cursor-pointer rounded-full border px-2 py-0.5 text-[11px] font-medium ${
-                  filters.levels.includes(level)
-                    ? levelColour(level) + ' border-transparent'
-                    : 'border-zinc-700 text-zinc-400 hover:border-zinc-500'
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  className="sr-only"
-                  checked={filters.levels.includes(level)}
-                  onChange={() => toggleLevel(level)}
-                />
-                {level}
-              </label>
-            ))}
+          <div className="mt-2">
+            <p className="mb-1.5 text-xs text-zinc-500">
+              Levels in this log
+              {facets && ` · ${facets.entryCount.toLocaleString()} entries`}
+            </p>
+            {facetsLoading && !facets && (
+              <p className="text-xs text-zinc-500">Scanning log for levels…</p>
+            )}
+            {facets && facets.levels.length === 0 && (
+              <p className="text-xs text-zinc-500">No Laravel headers found.</p>
+            )}
+            <div className="flex flex-wrap gap-1.5">
+              {facets?.levels.map(({ name, count }) => (
+                <label
+                  key={name}
+                  className={`cursor-pointer rounded-full border px-2 py-0.5 text-[11px] font-medium ${
+                    filters.levels.includes(name)
+                      ? levelColour(name) + ' border-transparent'
+                      : 'border-zinc-700 text-zinc-400 hover:border-zinc-500'
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    className="sr-only"
+                    checked={filters.levels.includes(name)}
+                    onChange={() => toggleLevel(name)}
+                  />
+                  {name} ({count.toLocaleString()})
+                </label>
+              ))}
+            </div>
           </div>
         </div>
       )}

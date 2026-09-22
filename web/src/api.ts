@@ -8,6 +8,17 @@ export interface FileInfo {
   lastOffset: number
 }
 
+export interface FacetCount {
+  name: string
+  count: number
+}
+
+export interface FileFacets {
+  levels: FacetCount[]
+  channels: FacetCount[]
+  entryCount: number
+}
+
 export interface SearchFilters {
   path: string
   timeStart?: number | null
@@ -89,19 +100,41 @@ function rememberToken(token: string): string {
   return token
 }
 
-function getToken(): string {
-  const fromUrl = new URLSearchParams(window.location.search).get('token')
+function tokenFromUrl(): string | null {
+  return new URLSearchParams(window.location.search).get('token')
+}
+
+function tokenFromEnv(): string | null {
+  const token = import.meta.env.VITE_PEEKER_TOKEN
+  return token || null
+}
+
+/** Resolve the auth token, preferring the current dev server token over stale storage. */
+export function getToken(): string {
+  const fromUrl = tokenFromUrl()
   if (fromUrl) return rememberToken(fromUrl)
+
+  const fromEnv = tokenFromEnv()
+  if (fromEnv) return rememberToken(fromEnv)
 
   const fromStorage = sessionStorage.getItem(TOKEN_STORAGE_KEY)
   if (fromStorage) return fromStorage
 
-  const fromEnv = import.meta.env.VITE_PEEKER_TOKEN
-  if (fromEnv) return rememberToken(fromEnv)
-
   throw new Error(
-    'Missing token. Use the URL printed by npm run dev (includes ?token=…), or run npm start.',
+    'Missing token. Restart npm run dev and use the URL printed in the terminal, or run npm start.',
   )
+}
+
+/** Keep URL/storage aligned with the live dev token after server restarts. */
+export function syncDevToken(): void {
+  const fromEnv = tokenFromEnv()
+  if (!fromEnv) return
+  rememberToken(fromEnv)
+  if (!tokenFromUrl()) {
+    const url = new URL(window.location.href)
+    url.searchParams.set('token', fromEnv)
+    window.history.replaceState({}, '', url)
+  }
 }
 
 function apiHeaders(): HeadersInit {
@@ -112,7 +145,25 @@ function apiHeaders(): HeadersInit {
 }
 
 function withToken(path: string): string {
-  return `${path}?token=${encodeURIComponent(getToken())}`
+  const sep = path.includes('?') ? '&' : '?'
+  return `${path}${sep}token=${encodeURIComponent(getToken())}`
+}
+
+async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  const res = await fetch(withToken(path), {
+    ...init,
+    headers: { ...apiHeaders(), ...init?.headers },
+  })
+  if (res.status !== 401) return res
+
+  sessionStorage.removeItem(TOKEN_STORAGE_KEY)
+  const fromEnv = tokenFromEnv()
+  if (fromEnv) rememberToken(fromEnv)
+
+  return fetch(withToken(path), {
+    ...init,
+    headers: { ...apiHeaders(), ...init?.headers },
+  })
 }
 
 async function parseError(res: Response): Promise<string> {
@@ -124,10 +175,19 @@ async function parseError(res: Response): Promise<string> {
   }
 }
 
-export async function openFile(path: string): Promise<FileInfo> {
-  const res = await fetch(withToken('/api/open'), {
+export async function fetchFacets(path: string, signal?: AbortSignal): Promise<FileFacets> {
+  const res = await apiFetch('/api/facets', {
     method: 'POST',
-    headers: apiHeaders(),
+    body: JSON.stringify({ path }),
+    signal,
+  })
+  if (!res.ok) throw new Error(await parseError(res))
+  return res.json() as Promise<FileFacets>
+}
+
+export async function openFile(path: string): Promise<FileInfo> {
+  const res = await apiFetch('/api/open', {
+    method: 'POST',
     body: JSON.stringify({ path }),
   })
   if (!res.ok) throw new Error(await parseError(res))
@@ -138,9 +198,8 @@ export async function fetchNeighbors(
   path: string,
   opts: { beforeOffset?: number; afterOffset?: number; count?: number },
 ): Promise<NeighborsResponse> {
-  const res = await fetch(withToken('/api/neighbors'), {
+  const res = await apiFetch('/api/neighbors', {
     method: 'POST',
-    headers: apiHeaders(),
     body: JSON.stringify({ path, ...opts }),
   })
   if (!res.ok) throw new Error(await parseError(res))
@@ -152,17 +211,15 @@ export async function fetchEntry(path: string, offset: number, length: number): 
     path,
     offset: String(offset),
     length: String(length),
-    token: getToken(),
   })
-  const res = await fetch(`/api/entry?${params}`)
+  const res = await apiFetch(`/api/entry?${params}`)
   if (!res.ok) throw new Error(await parseError(res))
   return res.json() as Promise<EntryBody>
 }
 
 export async function countMatches(filters: SearchFilters, signal?: AbortSignal): Promise<number | null> {
-  const res = await fetch(withToken('/api/count'), {
+  const res = await apiFetch('/api/count', {
     method: 'POST',
-    headers: apiHeaders(),
     body: JSON.stringify(filters),
     signal,
   })
@@ -176,9 +233,8 @@ export async function* streamSearch(
   filters: SearchFilters,
   signal?: AbortSignal,
 ): AsyncGenerator<SearchEvent> {
-  const res = await fetch(withToken('/api/search'), {
+  const res = await apiFetch('/api/search', {
     method: 'POST',
-    headers: apiHeaders(),
     body: JSON.stringify(filters),
     signal,
   })

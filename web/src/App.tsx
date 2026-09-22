@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   countMatches,
   fetchEntry,
+  fetchFacets,
   fetchNeighbors,
   openFile,
   streamSearch,
+  type FileFacets,
   type FileInfo,
   type NeighborEntry,
   type SearchEntry,
@@ -43,6 +45,8 @@ export default function App() {
   const [openError, setOpenError] = useState<string | null>(null)
 
   const [filters, setFilters] = useState<FilterState>(() => defaultFilters(null, null))
+  const [facets, setFacets] = useState<FileFacets | null>(null)
+  const [facetsLoading, setFacetsLoading] = useState(false)
   const [results, setResults] = useState<SearchEntry[]>([])
   const [nextCursor, setNextCursor] = useState<number | null>(null)
   const [hasMore, setHasMore] = useState(false)
@@ -64,6 +68,35 @@ export default function App() {
 
   const searchAbort = useRef<AbortController | null>(null)
   const countAbort = useRef<AbortController | null>(null)
+  const facetsAbort = useRef<AbortController | null>(null)
+
+  const applyFacets = useCallback((next: FileFacets) => {
+    setFacets(next)
+    const levelNames = new Set(next.levels.map((l) => l.name))
+    const channelNames = new Set(next.channels.map((c) => c.name))
+    setFilters((prev) => ({
+      ...prev,
+      levels: prev.levels.filter((l) => levelNames.has(l)),
+      channel: prev.channel && channelNames.has(prev.channel) ? prev.channel : '',
+    }))
+  }, [])
+
+  const loadFacets = useCallback(async (filePath: string) => {
+    facetsAbort.current?.abort()
+    const controller = new AbortController()
+    facetsAbort.current = controller
+    setFacets(null)
+    setFacetsLoading(true)
+    try {
+      const data = await fetchFacets(filePath, controller.signal)
+      applyFacets(data)
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') return
+      setFacets(null)
+    } finally {
+      setFacetsLoading(false)
+    }
+  }, [applyFacets])
 
   const resetContext = useCallback(() => {
     setContextAbove([])
@@ -86,17 +119,20 @@ export default function App() {
     setNextCursor(null)
     setHasMore(false)
     setTotalCount(null)
+    setFacets(null)
+    facetsAbort.current?.abort()
     try {
       const info = await openFile(trimmed)
       setFileInfo(info)
       setFilters(defaultFilters(info.firstTime, info.lastTime))
+      void loadFacets(info.path)
     } catch (err) {
       setFileInfo(null)
       setOpenError(err instanceof Error ? err.message : String(err))
     } finally {
       setOpenLoading(false)
     }
-  }, [path, resetContext])
+  }, [path, resetContext, loadFacets])
 
   const openedInitial = useRef(false)
   useEffect(() => {
@@ -261,6 +297,8 @@ export default function App() {
 
       <FilterBar
         filters={filters}
+        facets={facets}
+        facetsLoading={facetsLoading}
         onChange={setFilters}
         onSearch={handleSearch}
         searching={searching}

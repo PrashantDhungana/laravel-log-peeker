@@ -8,6 +8,7 @@ import { openFileInfo, byteRangeForTimeFilter } from './logfile.mjs'
 import { resolveEntry, readEntryAt, readNeighbors } from './entries.mjs'
 import { buildRgArgs, entryMatchesFilters } from './query.mjs'
 import { runRgOnRange, runRgCount } from './rg.mjs'
+import { collectFacets } from './facets.mjs'
 import { readJsonBody, sendError, sendJson, sendStreamError } from './util.mjs'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
@@ -31,7 +32,9 @@ export async function startServer({ port = 3847, token = randomBytes(16).toStrin
       }
 
       if (url.pathname.startsWith('/api/')) {
-        const reqToken = url.searchParams.get('token') ?? req.headers['x-peeker-token']
+        const headerToken = req.headers['x-peeker-token']
+        const reqToken = (typeof headerToken === 'string' ? headerToken : headerToken?.[0]) ??
+          url.searchParams.get('token')
         if (reqToken !== token) {
           sendError(res, 401, 'Unauthorized')
           return
@@ -94,6 +97,21 @@ async function handleApi(req, res, url) {
 
   if (req.method === 'POST' && url.pathname === '/api/count') {
     await handleCount(req, res)
+    return
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/facets') {
+    const body = await readJsonBody(req)
+    if (!body.path || typeof body.path !== 'string') {
+      sendError(res, 400, 'path required')
+      return
+    }
+    try {
+      const facets = await collectFacets(body.path)
+      sendJson(res, facets)
+    } catch (err) {
+      sendError(res, 400, err instanceof Error ? err.message : String(err))
+    }
     return
   }
 
