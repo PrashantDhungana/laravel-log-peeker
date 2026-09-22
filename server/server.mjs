@@ -10,6 +10,8 @@ import { buildRgArgs, entryMatchesFilters } from './query.mjs'
 import { runRgOnRange, runRgCount } from './rg.mjs'
 import { collectFacets } from './facets.mjs'
 import { normalizePaths, openFilesInfo, mergeFacets, searchMultiFiles, countMultiFiles } from './multi.mjs'
+import { stageFileStream } from './staging.mjs'
+import { pickLogFilesWindows } from './picker.mjs'
 import { readJsonBody, sendError, sendJson, sendStreamError } from './util.mjs'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
@@ -112,6 +114,33 @@ async function handleApi(req, res, url) {
     try {
       const facets = paths.length === 1 ? await collectFacets(paths[0]) : await mergeFacets(paths)
       sendJson(res, facets)
+    } catch (err) {
+      sendError(res, 400, err instanceof Error ? err.message : String(err))
+    }
+    return
+  }
+
+  if (req.method === 'PUT' && url.pathname === '/api/stage') {
+    const rawName = req.headers['x-filename']
+    const filename =
+      typeof rawName === 'string'
+        ? decodeURIComponent(rawName)
+        : Array.isArray(rawName)
+          ? decodeURIComponent(rawName[0] ?? 'upload.log')
+          : 'upload.log'
+    try {
+      const path = await stageFileStream(filename, req)
+      sendJson(res, { path, staged: true })
+    } catch (err) {
+      sendError(res, 400, err instanceof Error ? err.message : String(err))
+    }
+    return
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/pick') {
+    try {
+      const paths = await pickLogFilesWindows()
+      sendJson(res, { paths })
     } catch (err) {
       sendError(res, 400, err instanceof Error ? err.message : String(err))
     }

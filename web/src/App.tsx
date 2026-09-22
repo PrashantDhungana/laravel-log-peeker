@@ -15,6 +15,7 @@ import {
   type SearchFilters,
 } from './api'
 import { EntryDetail, NEIGHBOR_PAGE } from './components/EntryDetail'
+import { FileSelector } from './components/FileSelector'
 import { FilterBar, type FilterState } from './components/FilterBar'
 import { OpenFile } from './components/OpenFile'
 import { ResultList } from './components/ResultList'
@@ -51,6 +52,7 @@ export default function App() {
     }
   })
   const [files, setFiles] = useState<FileInfo[]>([])
+  const [searchPaths, setSearchPaths] = useState<string[]>([])
   const [summary, setSummary] = useState<OpenSummary | null>(null)
   const [openLoading, setOpenLoading] = useState(false)
   const [openError, setOpenError] = useState<string | null>(null)
@@ -126,34 +128,52 @@ export default function App() {
     setLoadingBelow(false)
   }, [])
 
-  const handleOpen = useCallback(async () => {
-    const paths = parsePathsInput(pathsInput)
-    if (!paths.length) return
-    setOpenLoading(true)
-    setOpenError(null)
-    setResults([])
-    setSelected(null)
-    setEntryBody(null)
-    resetContext()
-    setNextCursor(null)
-    setHasMore(false)
-    setTotalCount(null)
-    setFacets(null)
-    facetsAbort.current?.abort()
-    try {
-      const info = await openFiles(paths)
-      setFiles(info.files)
-      setSummary(info.summary)
-      setFilters(defaultFilters(info.summary.firstTime, info.summary.lastTime))
-      void loadFacets(paths)
-    } catch (err) {
-      setFiles([])
-      setSummary(null)
-      setOpenError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setOpenLoading(false)
-    }
-  }, [pathsInput, resetContext, loadFacets])
+  const openPaths = useCallback(
+    async (paths: string[]) => {
+      if (!paths.length) return
+      setOpenLoading(true)
+      setOpenError(null)
+      setResults([])
+      setSelected(null)
+      setEntryBody(null)
+      resetContext()
+      setNextCursor(null)
+      setHasMore(false)
+      setTotalCount(null)
+      setFacets(null)
+      facetsAbort.current?.abort()
+      try {
+        const info = await openFiles(paths)
+        const allPaths = info.files.map((f) => f.path)
+        setFiles(info.files)
+        setSearchPaths(allPaths)
+        setSummary(info.summary)
+        setFilters(defaultFilters(info.summary.firstTime, info.summary.lastTime))
+        void loadFacets(allPaths)
+      } catch (err) {
+        setFiles([])
+        setSearchPaths([])
+        setSummary(null)
+        setOpenError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setOpenLoading(false)
+      }
+    },
+    [resetContext, loadFacets],
+  )
+
+  const handleOpen = useCallback(() => {
+    void openPaths(parsePathsInput(pathsInput))
+  }, [pathsInput, openPaths])
+
+  const handlePathsDropped = useCallback(
+    (dropped: string[]) => {
+      const merged = [...new Set([...parsePathsInput(pathsInput), ...dropped])]
+      setPathsInput(merged.join('\n'))
+      void openPaths(merged)
+    },
+    [pathsInput, openPaths],
+  )
 
   const openedInitial = useRef(false)
   useEffect(() => {
@@ -163,9 +183,25 @@ export default function App() {
     }
   }, [pathsInput, handleOpen])
 
+  const handleSearchPathsChange = useCallback(
+    (paths: string[]) => {
+      setSearchPaths(paths)
+      setResults([])
+      setSelected(null)
+      setEntryBody(null)
+      resetContext()
+      setNextCursor(null)
+      setHasMore(false)
+      setTotalCount(null)
+      setSearchError(null)
+      if (paths.length) void loadFacets(paths)
+    },
+    [resetContext, loadFacets],
+  )
+
   const buildSearchFilters = useCallback(
     (cursor: number | SearchCursor | null = null): SearchFilters => {
-      const paths = files.map((f) => f.path)
+      const paths = searchPaths
       const base = {
         timeStart: filters.timeStart,
         timeEnd: filters.timeEnd,
@@ -182,12 +218,12 @@ export default function App() {
       }
       return { paths, ...base, cursor }
     },
-    [files, filters],
+    [searchPaths, filters],
   )
 
   const runSearch = useCallback(
     async (append = false, cursor: number | SearchCursor | null = null) => {
-      if (!files.length) return
+      if (!searchPaths.length) return
 
       searchAbort.current?.abort()
       countAbort.current?.abort()
@@ -230,7 +266,7 @@ export default function App() {
         setLoadingMore(false)
       }
     },
-    [files, buildSearchFilters, resetContext],
+    [searchPaths, buildSearchFilters, resetContext],
   )
 
   const handleSearch = () => void runSearch(false, null)
@@ -320,7 +356,8 @@ export default function App() {
         <OpenFile
           pathsInput={pathsInput}
           onPathsInputChange={setPathsInput}
-          onOpen={() => void handleOpen()}
+          onOpen={handleOpen}
+          onPathsDropped={handlePathsDropped}
           loading={openLoading}
           error={openError}
           files={files}
@@ -328,14 +365,28 @@ export default function App() {
         />
       </header>
 
+      <FileSelector
+        files={files}
+        selectedPaths={searchPaths}
+        onChange={handleSearchPathsChange}
+        disabled={openLoading}
+      />
+
       <FilterBar
         filters={filters}
         facets={facets}
         facetsLoading={facetsLoading}
+        searchScope={
+          files.length > 1
+            ? searchPaths.length === files.length
+              ? `All ${files.length} files`
+              : `${searchPaths.length} of ${files.length} files`
+            : null
+        }
         onChange={setFilters}
         onSearch={handleSearch}
         searching={searching}
-        disabled={!files.length}
+        disabled={!searchPaths.length}
       />
 
       {searchError && (
@@ -348,7 +399,7 @@ export default function App() {
         <ResultList
           results={results}
           selectedKey={selected ? entryKey(selected) : null}
-          multiFile={files.length > 1}
+          multiFile={searchPaths.length > 1}
           onSelect={(e) => void handleSelect(e)}
           hasMore={hasMore}
           loadingMore={loadingMore}

@@ -19,6 +19,7 @@ interface FilterBarProps {
   filters: FilterState
   facets: FileFacets | null
   facetsLoading: boolean
+  searchScope: string | null
   onChange: (filters: FilterState) => void
   onSearch: () => void
   searching: boolean
@@ -39,11 +40,14 @@ function activeFilterCount(filters: FilterState): number {
 function FilterSummary({
   filters,
   facets,
+  searchScope,
 }: {
   filters: FilterState
   facets: FileFacets | null
+  searchScope: string | null
 }) {
   const chips: string[] = []
+  if (searchScope) chips.push(searchScope)
   if (filters.phrase.trim()) chips.push(`"${filters.phrase.trim()}"`)
   if (filters.regex.trim()) chips.push(`/ ${filters.regex.trim()} /`)
   if (filters.excludePhrase.trim()) chips.push(`−"${filters.excludePhrase.trim()}"`)
@@ -84,6 +88,7 @@ export function FilterBar({
   filters,
   facets,
   facetsLoading,
+  searchScope,
   onChange,
   onSearch,
   searching,
@@ -118,7 +123,7 @@ export function FilterBar({
           Filters{activeCount > 0 ? ` (${activeCount})` : ''} {expanded ? '▴' : '▾'}
         </button>
 
-        {!expanded && <FilterSummary filters={filters} facets={facets} />}
+        {!expanded && <FilterSummary filters={filters} facets={facets} searchScope={searchScope} />}
 
         {facetsLoading && (
           <span className="text-xs text-zinc-500">Scanning log…</span>

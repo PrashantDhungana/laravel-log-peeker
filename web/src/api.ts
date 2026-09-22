@@ -207,6 +207,55 @@ export async function fetchFacets(paths: string[], signal?: AbortSignal): Promis
   return res.json() as Promise<FileFacets>
 }
 
+const STAGE_WARN_BYTES = 200 * 1024 * 1024
+
+/** Stream a dropped browser file to the local server for path-based search. */
+export async function stageDroppedFile(file: File, signal?: AbortSignal): Promise<string> {
+  const upload = () =>
+    fetch(withToken('/api/stage'), {
+      method: 'PUT',
+      headers: {
+        'x-peeker-token': getToken(),
+        'X-Filename': encodeURIComponent(file.name),
+      },
+      body: file,
+      signal,
+    })
+
+  let res = await upload()
+  if (res.status === 401) {
+    sessionStorage.removeItem(TOKEN_STORAGE_KEY)
+    const fromEnv = tokenFromEnv()
+    if (fromEnv) rememberToken(fromEnv)
+    res = await upload()
+  }
+  if (!res.ok) throw new Error(await parseError(res))
+  const data = (await res.json()) as { path: string }
+  return data.path
+}
+
+export async function stageDroppedFiles(files: File[], signal?: AbortSignal): Promise<string[]> {
+  return Promise.all(files.map((file) => stageDroppedFile(file, signal)))
+}
+
+export function shouldConfirmStage(files: File[]): boolean {
+  return files.some((file) => file.size > STAGE_WARN_BYTES)
+}
+
+export function stageConfirmMessage(files: File[]): string {
+  const total = files.reduce((sum, file) => sum + file.size, 0)
+  const mb = (total / (1024 * 1024)).toFixed(0)
+  return `Your browser cannot share file paths, so ${files.length} file(s) (~${mb} MB) will be copied locally for search. For very large logs, use Browse or paste the full path instead. Continue?`
+}
+
+/** Open the native Windows file picker and return absolute paths. */
+export async function pickLogFiles(): Promise<string[]> {
+  const res = await apiFetch('/api/pick', { method: 'POST' })
+  if (!res.ok) throw new Error(await parseError(res))
+  const data = (await res.json()) as { paths: string[] }
+  return data.paths
+}
+
 export async function openFiles(paths: string[]): Promise<OpenFilesResponse> {
   const body = paths.length === 1 ? { path: paths[0] } : { paths }
   const res = await apiFetch('/api/open', {
